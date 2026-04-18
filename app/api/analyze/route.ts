@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
+import { describeOpenAIError, getOpenAIClient, getOpenAIModel } from "@/lib/openai-server";
 import { buildAnalysis } from "@/lib/scoring";
 import { ClarificationQuestion } from "@/lib/types";
 
@@ -37,23 +37,31 @@ export async function POST(request: Request) {
       : {})
   };
 
+  const { client, status } = getOpenAIClient();
   const fallback = buildAnalysis(ticket, answers, {
     id: body.taskId,
-    created_at: body.createdAt
+    created_at: body.createdAt,
+    openAIConnected: Boolean(client),
+    supabaseConnected: Boolean(
+      process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    )
   });
   fallback.clarifyingQuestions =
     clarificationQuestions.length > 0 ? clarificationQuestions : fallback.clarifyingQuestions;
   fallback.answeredClarifications = answers;
   fallback.clarification_answers = answers;
 
-  if (!process.env.OPENAI_API_KEY) {
-    return NextResponse.json({ result: fallback, mode: "demo" });
+  if (!client) {
+    return NextResponse.json({
+      result: fallback,
+      mode: "demo",
+      warning: status.reason ?? "OPENAI_API_KEY is missing. Demo fallback used."
+    });
   }
 
   try {
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const completion = await client.chat.completions.create({
-      model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+      model: getOpenAIModel(),
       temperature: 0.2,
       response_format: { type: "json_object" },
       messages: [
@@ -109,7 +117,7 @@ export async function POST(request: Request) {
         )
       },
       mode: "fallback",
-      warning: error instanceof Error ? error.message : "OpenAI request failed."
+      warning: describeOpenAIError(error)
     });
   }
 }

@@ -538,7 +538,7 @@ export function generateSubtasks(profile: TaskProfile): Subtask[] {
   return withSubtaskMetadata([...common, ...byType[profile.task_type]]);
 }
 
-function buildSources(): Source[] {
+function buildSources(options: { openAIConnected?: boolean; supabaseConnected?: boolean } = {}): Source[] {
   return [
     {
       name: "Manual",
@@ -548,9 +548,9 @@ function buildSources(): Source[] {
     },
     {
       name: "OpenAI",
-      status: process.env.OPENAI_API_KEY ? "connected" : "demo",
+      status: options.openAIConnected ? "connected" : "demo",
       fields: ["scope summary", "clarifying questions", "workflow explanation"],
-      note: process.env.OPENAI_API_KEY
+      note: options.openAIConnected
         ? "Live model path is available on the server."
         : "Demo fallback mirrors the production AI contract."
     },
@@ -562,7 +562,7 @@ function buildSources(): Source[] {
     },
     {
       name: "Supabase",
-      status: process.env.NEXT_PUBLIC_SUPABASE_URL ? "connected" : "demo",
+      status: options.supabaseConnected ? "connected" : "demo",
       fields: ["history", "saved estimations", "team calibration"],
       note: "Persists history when Supabase environment variables are configured."
     },
@@ -644,6 +644,8 @@ export function buildOptimization(
 type BuildAnalysisOptions = {
   id?: string;
   created_at?: string;
+  openAIConnected?: boolean;
+  supabaseConnected?: boolean;
 };
 
 export function buildAnalysis(
@@ -656,7 +658,10 @@ export function buildAnalysis(
   const questions = clarificationQuestions(profile, ticket);
   const title = ticket.split(/[.\n]/)[0]?.replace(/^#+\s*/, "").slice(0, 86) || "Untitled task";
   const highRisk = profile.blocker_probability === "high" || profile.ambiguity === "high";
-  const sources = buildSources();
+  const sources = buildSources({
+    openAIConnected: options.openAIConnected,
+    supabaseConnected: options.supabaseConnected
+  });
   const plan = buildExecutionPlan(profile);
   const optimization = buildOptimization(profile, estimation, plan, sources);
   const now = new Date().toISOString();

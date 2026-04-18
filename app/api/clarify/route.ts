@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
+import { describeOpenAIError, getOpenAIClient, getOpenAIModel } from "@/lib/openai-server";
 import { buildClarificationDecision } from "@/lib/scoring";
 import { ClarificationDecision, ClarificationQuestion } from "@/lib/types";
 
@@ -40,14 +40,19 @@ export async function POST(request: Request) {
 
   const fallback = buildClarificationDecision(ticket);
 
-  if (!process.env.OPENAI_API_KEY) {
-    return NextResponse.json({ decision: fallback, mode: "demo" });
+  const { client, status } = getOpenAIClient();
+
+  if (!client) {
+    return NextResponse.json({
+      decision: fallback,
+      mode: "demo",
+      warning: status.reason ?? "OPENAI_API_KEY is missing. Demo fallback used."
+    });
   }
 
   try {
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const completion = await client.chat.completions.create({
-      model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+      model: getOpenAIModel(),
       temperature: 0.15,
       response_format: { type: "json_object" },
       messages: [
@@ -80,7 +85,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       decision: fallback,
       mode: "fallback",
-      warning: error instanceof Error ? error.message : "Clarification generation failed."
+      warning: describeOpenAIError(error)
     });
   }
 }
