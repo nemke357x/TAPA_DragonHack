@@ -1,7 +1,7 @@
 "use client";
 
 import { supabase } from "@/lib/supabase";
-import { AnalysisResult, TaskDraft } from "@/lib/types";
+import { AnalysisResult, ClarificationQuestion, TaskDraft } from "@/lib/types";
 
 const HISTORY_KEY = "estimate-ai-history-v2";
 const LEGACY_HISTORY_KEY = "estimate-ai-history";
@@ -23,6 +23,33 @@ function parseRecords(value: string | null): AnalysisResult[] {
   }
 }
 
+function normalizeQuestions(value: unknown): ClarificationQuestion[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item, index) => {
+      if (typeof item === "string") {
+        return {
+          id: `legacy-${index + 1}`,
+          question: item,
+          type: "yes_no" as const
+        };
+      }
+
+      if (!item || typeof item !== "object") return null;
+
+      const source = item as Partial<ClarificationQuestion>;
+      if (!source.question) return null;
+
+      return {
+        id: source.id ?? `legacy-${index + 1}`,
+        question: source.question,
+        type: source.type === "short_text" ? "short_text" : "yes_no"
+      };
+    })
+    .filter(Boolean) as ClarificationQuestion[];
+}
+
 function normalizeRecord(record: AnalysisResult): AnalysisResult {
   const createdAt = record.created_at ?? new Date().toISOString();
 
@@ -31,6 +58,7 @@ function normalizeRecord(record: AnalysisResult): AnalysisResult {
     raw_input: record.raw_input ?? record.title,
     created_at: createdAt,
     updated_at: record.updated_at ?? createdAt,
+    clarifyingQuestions: normalizeQuestions(record.clarifyingQuestions),
     clarification_answers: record.clarification_answers ?? record.answeredClarifications ?? {},
     answeredClarifications: record.answeredClarifications ?? record.clarification_answers ?? {},
     plan: record.plan ?? {

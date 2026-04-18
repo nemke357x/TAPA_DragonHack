@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
 import { deriveBaseEstimateFromAI } from "@/lib/analysis-input";
+import { describeOpenAIError, getOpenAIClient, getOpenAIModel } from "@/lib/openai-server";
 import { buildAnalysis } from "@/lib/scoring";
-import { AnalysisInput, RepositoryProfile } from "@/lib/types";
+import { AnalysisInput, ClarificationQuestion, RepositoryProfile } from "@/lib/types";
 
 export async function POST(request: Request) {
   const body = (await request.json()) as {
     ticket?: string;
     taskText?: string;
     answers?: Record<string, string>;
+    clarificationQuestions?: ClarificationQuestion[];
+    manualExtraContext?: string;
     taskId?: string;
     createdAt?: string;
     repositoryProfile?: RepositoryProfile;
@@ -19,9 +21,29 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Ticket text is required." }, { status: 400 });
   }
 
+  const clarificationQuestions = Array.isArray(body.clarificationQuestions)
+    ? body.clarificationQuestions.slice(0, 5)
+    : [];
+  const answers = {
+    ...(clarificationQuestions.length > 0
+      ? {
+          "Clarification questions considered": clarificationQuestions
+            .map((question) => question.question)
+            .join(" | ")
+        }
+      : {}),
+    ...(body.answers ?? {}),
+    ...(body.manualExtraContext?.trim()
+      ? {
+          "Manual extra context": body.manualExtraContext.trim()
+        }
+      : {})
+  };
+
+  const { client, status } = getOpenAIClient();
   const analysisInput: AnalysisInput = {
     taskText: ticket,
-    clarificationAnswers: body.answers ?? {},
+    clarificationAnswers: answers,
     repositoryProfile: body.repositoryProfile,
     estimateSource: "deterministic-default"
   };
@@ -33,20 +55,31 @@ export async function POST(request: Request) {
     },
     {},
     {
-    id: body.taskId,
-    created_at: body.createdAt,
-    baseEstimateOverride: suggestedBaseEstimate
+      id: body.taskId,
+      created_at: body.createdAt,
+      openAIConnected: Boolean(client),
+      supabaseConnected: Boolean(
+        process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+      ),
+      baseEstimateOverride: suggestedBaseEstimate
     }
   );
+  fallback.clarifyingQuestions =
+    clarificationQuestions.length > 0 ? clarificationQuestions : fallback.clarifyingQuestions;
+  fallback.answeredClarifications = answers;
+  fallback.clarification_answers = answers;
 
-  if (!process.env.OPENAI_API_KEY) {
-    return NextResponse.json({ result: fallback, mode: "demo" });
+  if (!client) {
+    return NextResponse.json({
+      result: fallback,
+      mode: "demo",
+      warning: status.reason ?? "OPENAI_API_KEY is missing. Demo fallback used."
+    });
   }
 
   try {
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const completion = await client.chat.completions.create({
-      model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+      model: getOpenAIModel(),
       temperature: 0.2,
       response_format: { type: "json_object" },
       messages: [
@@ -59,6 +92,8 @@ export async function POST(request: Request) {
           role: "user",
           content: JSON.stringify({
             analysisInput,
+            clarificationQuestions,
+            manualExtraContext: body.manualExtraContext ?? "",
             deterministicResult: fallback
           })
         }
@@ -99,7 +134,7 @@ export async function POST(request: Request) {
         )
       },
       mode: "fallback",
-      warning: error instanceof Error ? error.message : "OpenAI request failed."
+      warning: describeOpenAIError(error)
     });
   }
 }
