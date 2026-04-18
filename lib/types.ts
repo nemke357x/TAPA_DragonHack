@@ -60,6 +60,49 @@ export type Estimation = {
   seniorMultiplier: number;
 };
 
+export type RepositoryProfile = {
+  repositoryName: string;
+  owner: string;
+  defaultBranch: string;
+  description?: string;
+  stars?: number;
+  forks?: number;
+  openIssues?: number;
+  detectedLanguages: string[];
+  detectedFrameworks: string[];
+  packageManager?: string;
+  frontendStack: string[];
+  backendStack: string[];
+  databaseOrInfraHints: string[];
+  testingSetup: string[];
+  architectureNotes: string[];
+  topLevelStructure: string[];
+  importantFiles: string[];
+  complexitySignals: string[];
+  implementationOverheadHints: string[];
+  repoSummary: string;
+  importedAt: string;
+  sourceUrl: string;
+};
+
+export type BaseEstimateSource = "deterministic-default" | "ai-suggested" | "manual-override";
+
+export type SuggestedBaseEstimate = {
+  baseHours?: number;
+  baseSize?: "xs" | "s" | "m" | "l" | "xl";
+  baseEstimateConfidence?: number;
+  baseEstimateSource: BaseEstimateSource;
+  reasoning?: string[];
+};
+
+export type AnalysisInput = {
+  taskText: string;
+  clarificationAnswers?: Record<string, string>;
+  repositoryProfile?: RepositoryProfile;
+  suggestedBaseEstimate?: SuggestedBaseEstimate;
+  estimateSource?: BaseEstimateSource;
+};
+
 export type AnalysisResult = {
   id: string;
   title: string;
@@ -84,6 +127,8 @@ export type AnalysisResult = {
   beforeOptimization: string[];
   afterOptimization: string[];
   explanation: string[];
+  repositoryProfile?: RepositoryProfile;
+  baseEstimate?: SuggestedBaseEstimate;
 };
 
 export type ExecutionPlan = {
@@ -115,6 +160,7 @@ export type TaskDraft = {
   result: AnalysisResult | null;
   githubUrl?: string;
   importNote?: string;
+  repositoryProfile?: RepositoryProfile | null;
   updated_at: string;
 };
 

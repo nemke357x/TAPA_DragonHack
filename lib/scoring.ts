@@ -1,15 +1,19 @@
 import {
+  AnalysisInput,
   AnalysisResult,
   Estimation,
   ExecutionPlan,
   Level,
   OptimizationResult,
   Priority,
+  RepositoryProfile,
   Source,
   Subtask,
+  SuggestedBaseEstimate,
   TaskProfile,
   TaskType
 } from "@/lib/types";
+import { buildAnalysisText, createDefaultBaseEstimate } from "@/lib/analysis-input";
 import { clamp } from "@/lib/utils";
 
 const taskTypes: TaskType[] = [
@@ -201,8 +205,11 @@ export function inferTaskProfile(ticket: string): TaskProfile {
   };
 }
 
-export function scoreTask(profile: TaskProfile): Estimation {
-  const base = baseHours[profile.task_type];
+export function scoreTask(
+  profile: TaskProfile,
+  options: { baseEstimateOverride?: SuggestedBaseEstimate | null } = {}
+): Estimation {
+  const base = options.baseEstimateOverride?.baseHours ?? baseHours[profile.task_type];
   const raw =
     base *
     levelMultiplier[profile.complexity] *
@@ -493,7 +500,7 @@ export function generateSubtasks(profile: TaskProfile): Subtask[] {
   return withSubtaskMetadata([...common, ...byType[profile.task_type]]);
 }
 
-function buildSources(): Source[] {
+function buildSources(repositoryProfile?: RepositoryProfile): Source[] {
   return [
     {
       name: "Manual",
@@ -511,9 +518,13 @@ function buildSources(): Source[] {
     },
     {
       name: "GitHub",
-      status: "ready",
-      fields: ["issues", "labels", "linked pull requests"],
-      note: "Paste a public GitHub issue URL to import real issue metadata."
+      status: repositoryProfile ? "connected" : "ready",
+      fields: repositoryProfile
+        ? ["repository profile", "framework signals", "tooling", "architecture hints"]
+        : ["repository metadata", "framework signals", "tooling"],
+      note: repositoryProfile
+        ? `Using repository context from ${repositoryProfile.owner}/${repositoryProfile.repositoryName}.`
+        : "Paste a GitHub repository URL to import repository-level context."
     },
     {
       name: "Supabase",
@@ -599,19 +610,31 @@ export function buildOptimization(
 type BuildAnalysisOptions = {
   id?: string;
   created_at?: string;
+  baseEstimateOverride?: SuggestedBaseEstimate | null;
 };
 
 export function buildAnalysis(
-  ticket: string,
+  ticketOrInput: string | AnalysisInput,
   answers: Record<string, string> = {},
   options: BuildAnalysisOptions = {}
 ): AnalysisResult {
-  const profile = inferTaskProfile(`${ticket}\n${Object.values(answers).join("\n")}`);
-  const estimation = scoreTask(profile);
+  const analysisInput: AnalysisInput =
+    typeof ticketOrInput === "string"
+      ? { taskText: ticketOrInput, clarificationAnswers: answers }
+      : ticketOrInput;
+  const analysisText = buildAnalysisText(analysisInput);
+  const baseEstimate =
+    options.baseEstimateOverride ??
+    analysisInput.suggestedBaseEstimate ??
+    createDefaultBaseEstimate();
+  const profile = inferTaskProfile(analysisText);
+  const estimation = scoreTask(profile, {
+    baseEstimateOverride: baseEstimate.baseHours ? baseEstimate : null
+  });
   const questions = clarificationQuestions(profile);
-  const title = ticket.split(/[.\n]/)[0]?.replace(/^#+\s*/, "").slice(0, 86) || "Untitled task";
+  const title = analysisInput.taskText.split(/[.\n]/)[0]?.replace(/^#+\s*/, "").slice(0, 86) || "Untitled task";
   const highRisk = profile.blocker_probability === "high" || profile.ambiguity === "high";
-  const sources = buildSources();
+  const sources = buildSources(analysisInput.repositoryProfile);
   const plan = buildExecutionPlan(profile);
   const optimization = buildOptimization(profile, estimation, plan, sources);
   const now = new Date().toISOString();
@@ -619,7 +642,7 @@ export function buildAnalysis(
   return {
     id: options.id ?? crypto.randomUUID(),
     title,
-    raw_input: ticket,
+    raw_input: analysisInput.taskText,
     created_at: options.created_at ?? now,
     updated_at: now,
     summary: `${profile.task_type} with ${profile.complexity} complexity, ${profile.ambiguity} ambiguity, and ${profile.ai_leverage} AI leverage.`,
@@ -627,8 +650,8 @@ export function buildAnalysis(
     managerSummary: `Plan this as a ${estimation.with_ai_min_hours}-${estimation.with_ai_max_hours} hour AI-assisted effort with ${estimation.confidence_score}% confidence. The biggest productivity gain comes from reducing ambiguity before coding starts.`,
     profile,
     clarifyingQuestions: questions,
-    answeredClarifications: answers,
-    clarification_answers: answers,
+    answeredClarifications: analysisInput.clarificationAnswers ?? {},
+    clarification_answers: analysisInput.clarificationAnswers ?? {},
     estimation,
     sources,
     blockers: [
@@ -661,9 +684,14 @@ export function buildAnalysis(
     ],
     explanation: [
       `Base estimate comes from task type: ${profile.task_type}.`,
+      analysisInput.repositoryProfile
+        ? "Repository context contributed stack, tooling, architecture, and overhead signals."
+        : "No repository context was imported, so the estimate uses task text and clarifications only.",
       `Multipliers adjust for complexity, ambiguity, dependencies, review load, expected output size, and coordination.`,
       `AI changes the range only through the ai_leverage factor; the final hours are deterministic.`,
       `Confidence decreases when ambiguity, blocker probability, or dependency load are high.`
-    ]
+    ],
+    repositoryProfile: analysisInput.repositoryProfile,
+    baseEstimate
   };
 }

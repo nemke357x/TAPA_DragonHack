@@ -56,7 +56,7 @@ import {
   saveDraft,
   saveHistoryRecord
 } from "@/lib/storage";
-import { AnalysisResult } from "@/lib/types";
+import { AnalysisResult, RepositoryProfile } from "@/lib/types";
 import { cn, formatHours } from "@/lib/utils";
 
 type PageStep = "input" | "clarify" | "analyze" | "results" | "plan" | "optimize";
@@ -232,6 +232,7 @@ function EstimateApp() {
   const [saved, setSaved] = useState(false);
   const [githubUrl, setGithubUrl] = useState("");
   const [importNote, setImportNote] = useState("");
+  const [repositoryProfile, setRepositoryProfile] = useState<RepositoryProfile | null>(null);
   const [error, setError] = useState("");
   const analysisKeyRef = useRef<string | null>(null);
 
@@ -262,6 +263,7 @@ function EstimateApp() {
     setAnswers(record.clarification_answers ?? record.answeredClarifications ?? {});
     setQuestions(record.clarifyingQuestions.length ? record.clarifyingQuestions : generateQuestions(record.raw_input));
     setResult(record);
+    setRepositoryProfile(record.repositoryProfile ?? null);
     setSaved(true);
     setError("");
   }
@@ -277,6 +279,7 @@ function EstimateApp() {
     setSaved(false);
     setGithubUrl("");
     setImportNote("");
+    setRepositoryProfile(null);
     setError("");
     analysisKeyRef.current = null;
     router.push("/?step=input");
@@ -302,6 +305,7 @@ function EstimateApp() {
       setResult(draft.result);
       setGithubUrl(draft.githubUrl ?? "");
       setImportNote(draft.importNote ?? "");
+      setRepositoryProfile(draft.repositoryProfile ?? draft.result?.repositoryProfile ?? null);
       setSaved(Boolean(draft.result));
     }
 
@@ -337,9 +341,10 @@ function EstimateApp() {
       result,
       githubUrl,
       importNote,
+      repositoryProfile,
       updated_at: new Date().toISOString()
     });
-  }, [activeTaskId, answers, createdAt, githubUrl, hydrated, importNote, questions, result, taskText]);
+  }, [activeTaskId, answers, createdAt, githubUrl, hydrated, importNote, questions, repositoryProfile, result, taskText]);
 
   useEffect(() => {
     if (!hydrated || showHistory) return;
@@ -429,7 +434,7 @@ function EstimateApp() {
     const taskId = activeTaskId ?? crypto.randomUUID();
     const taskCreatedAt = createdAt ?? new Date().toISOString();
     const payloadAnswers = makeAnswersPayload(answers);
-    const runKey = `${taskId}:${trimmed}:${JSON.stringify(payloadAnswers)}`;
+    const runKey = `${taskId}:${trimmed}:${JSON.stringify(payloadAnswers)}:${repositoryProfile?.sourceUrl ?? ""}`;
 
     if (analysisKeyRef.current === runKey) return;
     analysisKeyRef.current = runKey;
@@ -441,7 +446,9 @@ function EstimateApp() {
     setError("");
 
     try {
-      const localProfile = inferTaskProfile(`${trimmed}\n${Object.values(payloadAnswers).join("\n")}`);
+      const localProfile = inferTaskProfile(
+        `${trimmed}\n${repositoryProfile?.repoSummary ?? ""}\n${Object.values(payloadAnswers).join("\n")}`
+      );
       await sleep(420);
       setLoadingStage(1);
       setStageDetail(
@@ -469,7 +476,8 @@ function EstimateApp() {
           ticket: trimmed,
           answers: payloadAnswers,
           taskId,
-          createdAt: taskCreatedAt
+          createdAt: taskCreatedAt,
+          repositoryProfile: repositoryProfile ?? undefined
         })
       });
       const payload = await response.json();
@@ -499,13 +507,13 @@ function EstimateApp() {
     }
   }
 
-  async function importGithubIssue() {
+  async function importGithubRepository() {
     if (!githubUrl.trim()) {
-      setImportNote("Paste a GitHub issue URL first.");
+      setImportNote("Paste a GitHub repository URL first.");
       return;
     }
 
-    setImportNote("Importing GitHub issue...");
+    setImportNote("Importing repository context...");
 
     try {
       const response = await fetch("/api/import/github", {
@@ -516,15 +524,22 @@ function EstimateApp() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error);
 
-      handleTaskTextChange(payload.importedText);
-      setImportNote(`Imported "${payload.title}" from GitHub.`);
+      setRepositoryProfile(payload.profile);
+      setImportNote(
+        `Imported ${payload.profile.owner}/${payload.profile.repositoryName}: ${
+          payload.profile.detectedFrameworks.slice(0, 3).join(", ") ||
+          payload.profile.detectedLanguages.slice(0, 3).join(", ") ||
+          "repository profile ready"
+        }.`
+      );
     } catch (importError) {
-      setImportNote(importError instanceof Error ? importError.message : "GitHub import failed.");
+      setRepositoryProfile(null);
+      setImportNote(importError instanceof Error ? importError.message : "GitHub repository import failed.");
     }
   }
 
   function importPlaceholder(name: string) {
-    setImportNote(`${name} import is connector-ready. Paste task text or use GitHub for live import.`);
+    setImportNote(`${name} import is connector-ready. Task input remains manual.`);
   }
 
   async function saveCurrentResult() {
@@ -575,9 +590,10 @@ function EstimateApp() {
                   onAnalyze={beginClarify}
                   githubUrl={githubUrl}
                   setGithubUrl={setGithubUrl}
-                  importGithubIssue={importGithubIssue}
+                  importGithubRepository={importGithubRepository}
                   importPlaceholder={importPlaceholder}
                   importNote={importNote}
+                  repositoryProfile={repositoryProfile}
                   error={error}
                   selectExample={selectExample}
                 />
@@ -760,9 +776,10 @@ function InputScreen({
   onAnalyze,
   githubUrl,
   setGithubUrl,
-  importGithubIssue,
+  importGithubRepository,
   importPlaceholder,
   importNote,
+  repositoryProfile,
   error,
   selectExample
 }: {
@@ -771,9 +788,10 @@ function InputScreen({
   onAnalyze: () => void;
   githubUrl: string;
   setGithubUrl: (value: string) => void;
-  importGithubIssue: () => void;
+  importGithubRepository: () => void;
   importPlaceholder: (name: string) => void;
   importNote: string;
+  repositoryProfile: RepositoryProfile | null;
   error: string;
   selectExample: (ticket: string) => void;
 }) {
@@ -826,25 +844,49 @@ function InputScreen({
           value={githubUrl}
           onChange={(event) => setGithubUrl(event.target.value)}
           className="border-white/15 bg-[#07181c] text-white placeholder:text-white/35"
-          placeholder="Optional public GitHub issue URL"
+          placeholder="Optional GitHub repository URL"
         />
         <Button
           variant="secondary"
           className="border-white/10 bg-white/[0.06] text-white hover:bg-white/10"
-          onClick={importGithubIssue}
+          onClick={importGithubRepository}
         >
           <Github className="h-4 w-4" />
-          Import
+          Import repo context
         </Button>
       </div>
 
       <div className="mt-3 flex flex-wrap justify-center gap-2">
         <ImportButton label="Jira" icon={Layers3} onClick={() => importPlaceholder("Jira")} />
+        <ImportButton label="GitHub repo" icon={Github} onClick={importGithubRepository} />
         <ImportButton label="Linear" icon={Workflow} onClick={() => importPlaceholder("Linear")} />
         <ImportButton label="Slack" icon={MessageSquare} onClick={() => importPlaceholder("Slack")} />
       </div>
 
       {importNote && <p className="mt-3 text-xs text-white/50">{importNote}</p>}
+
+      {repositoryProfile && (
+        <div className="mt-4 w-full max-w-2xl rounded-lg border border-emerald-300/20 bg-emerald-300/8 p-3 text-left">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-black text-emerald-200">
+              {repositoryProfile.owner}/{repositoryProfile.repositoryName}
+            </span>
+            <span className="rounded-md bg-white/8 px-2 py-1 text-[11px] font-bold text-white/55">
+              {repositoryProfile.defaultBranch}
+            </span>
+          </div>
+          <p className="mt-2 text-xs leading-5 text-white/58">{repositoryProfile.repoSummary}</p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {[...repositoryProfile.detectedFrameworks, ...repositoryProfile.detectedLanguages]
+              .slice(0, 6)
+              .map((item) => (
+                <span key={item} className="rounded-md bg-[#07181c] px-2 py-1 text-[11px] font-bold text-white/62">
+                  {item}
+                </span>
+              ))}
+          </div>
+        </div>
+      )}
 
       <div className="mt-8 flex flex-wrap justify-center gap-4 text-[11px] font-bold text-white/40">
         <span>AI-powered estimation</span>

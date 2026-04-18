@@ -1,24 +1,43 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
+import { deriveBaseEstimateFromAI } from "@/lib/analysis-input";
 import { buildAnalysis } from "@/lib/scoring";
+import { AnalysisInput, RepositoryProfile } from "@/lib/types";
 
 export async function POST(request: Request) {
   const body = (await request.json()) as {
     ticket?: string;
+    taskText?: string;
     answers?: Record<string, string>;
     taskId?: string;
     createdAt?: string;
+    repositoryProfile?: RepositoryProfile;
   };
 
-  const ticket = body.ticket?.trim();
+  const ticket = (body.taskText ?? body.ticket)?.trim();
   if (!ticket) {
     return NextResponse.json({ error: "Ticket text is required." }, { status: 400 });
   }
 
-  const fallback = buildAnalysis(ticket, body.answers ?? {}, {
+  const analysisInput: AnalysisInput = {
+    taskText: ticket,
+    clarificationAnswers: body.answers ?? {},
+    repositoryProfile: body.repositoryProfile,
+    estimateSource: "deterministic-default"
+  };
+  const suggestedBaseEstimate = await deriveBaseEstimateFromAI(analysisInput);
+  const fallback = buildAnalysis(
+    {
+      ...analysisInput,
+      suggestedBaseEstimate: suggestedBaseEstimate ?? undefined
+    },
+    {},
+    {
     id: body.taskId,
-    created_at: body.createdAt
-  });
+    created_at: body.createdAt,
+    baseEstimateOverride: suggestedBaseEstimate
+    }
+  );
 
   if (!process.env.OPENAI_API_KEY) {
     return NextResponse.json({ result: fallback, mode: "demo" });
@@ -34,13 +53,12 @@ export async function POST(request: Request) {
         {
           role: "system",
           content:
-            "You help software teams plan work. Return compact JSON only. Do not estimate hours; the app uses deterministic scoring. Improve summaries, blockers, accelerators, workflow, and subtask guidance based on the given deterministic profile."
+            "You help software teams plan work. Return compact JSON only. Do not estimate hours yet; the app currently uses deterministic scoring. Improve summaries, blockers, accelerators, workflow, and subtask guidance based on the deterministic profile and repository profile. A future base-estimate provider may suggest base hours before deterministic multipliers are applied."
         },
         {
           role: "user",
           content: JSON.stringify({
-            ticket,
-            answers: body.answers ?? {},
+            analysisInput,
             deterministicResult: fallback
           })
         }
