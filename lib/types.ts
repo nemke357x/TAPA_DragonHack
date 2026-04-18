@@ -46,6 +46,8 @@ export type Subtask = {
   parallelizable: boolean;
   criticalPath: boolean;
   guidance: string;
+  without_ai_hours: number;
+  with_ai_hours: number;
 };
 
 export type Estimation = {
@@ -58,6 +60,8 @@ export type Estimation = {
   delay_risk: number;
   juniorMultiplier: number;
   seniorMultiplier: number;
+  formulaSteps: string[];
+  ai_reduction_pct: number;
 };
 
 export type AnalysisResult = {

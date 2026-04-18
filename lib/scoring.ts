@@ -10,6 +10,26 @@ import {
   TaskProfile,
   TaskType
 } from "@/lib/types";
+import {
+  AiTool,
+  AI_BASE_LEVERAGE,
+  AI_MAX_REDUCTION,
+  AI_SIGNAL_MODIFIER,
+  AI_TOOL_CAPTURE,
+  AMBIGUITY_MULT,
+  AMBIGUITY_RANGE_PCT,
+  BASE_HOURS,
+  COMPLEXITY_MULT,
+  CONFIDENCE_BASE,
+  CONFIDENCE_BONUSES,
+  CONFIDENCE_PENALTIES,
+  COORDINATION_MULT,
+  DEPENDENCY_MULT,
+  OUTPUT_MULT,
+  RESEARCH_MULT,
+  REVIEW_MULT,
+  SUBTASK_AI_MULT
+} from "@/lib/tables";
 import { clamp } from "@/lib/utils";
 
 const taskTypes: TaskType[] = [
@@ -25,34 +45,9 @@ const taskTypes: TaskType[] = [
   "research summary"
 ];
 
-const baseHours: Record<TaskType, number> = {
-  "frontend feature": 16,
-  "backend feature": 18,
-  "bug fix": 10,
-  "API integration": 20,
-  "auth flow": 24,
-  "technical documentation": 8,
-  "performance optimization": 22,
-  "test creation": 10,
-  "product spec": 7,
-  "research summary": 8
-};
-
-const levelMultiplier: Record<Level, number> = {
-  low: 0.85,
-  medium: 1,
-  high: 1.35
-};
-
-const aiSavings: Record<Level, number> = {
-  low: 0.16,
-  medium: 0.34,
-  high: 0.55
-};
-
 const words = (text: string) => text.toLowerCase();
 
-type SubtaskSeed = Omit<Subtask, "sharePercent" | "priority" | "aiHelpfulnessTag"> & {
+type SubtaskSeed = Omit<Subtask, "sharePercent" | "priority" | "aiHelpfulnessTag" | "without_ai_hours" | "with_ai_hours"> & {
   effortWeight?: number;
 };
 
@@ -68,7 +63,7 @@ function priorityForSubtask(subtask: SubtaskSeed): Priority {
   return "Low";
 }
 
-function withSubtaskMetadata(subtasks: SubtaskSeed[]): Subtask[] {
+function withSubtaskMetadata(subtasks: SubtaskSeed[], rawHours: number): Subtask[] {
   const total = subtasks.reduce((sum, subtask) => sum + (subtask.effortWeight ?? 1), 0);
   let used = 0;
 
@@ -78,13 +73,19 @@ function withSubtaskMetadata(subtasks: SubtaskSeed[]): Subtask[] {
     const sharePercent = isLast ? Math.max(5, 100 - used) : Math.max(5, computed);
     used += sharePercent;
 
+    const tag = helpfulnessTag(subtask.aiHelpfulness).toLowerCase() as "high" | "medium" | "low";
+    const without_ai_base = (sharePercent / 100) * rawHours;
+    const with_ai_base = without_ai_base * SUBTASK_AI_MULT[tag];
+
     const { effortWeight, ...rest } = subtask;
 
     return {
       ...rest,
       sharePercent,
       priority: priorityForSubtask(subtask),
-      aiHelpfulnessTag: helpfulnessTag(subtask.aiHelpfulness)
+      aiHelpfulnessTag: helpfulnessTag(subtask.aiHelpfulness),
+      without_ai_hours: Math.round(without_ai_base * 10) / 10,
+      with_ai_hours: Math.round(with_ai_base * 10) / 10
     };
   });
 }
@@ -201,46 +202,73 @@ export function inferTaskProfile(ticket: string): TaskProfile {
   };
 }
 
-export function scoreTask(profile: TaskProfile): Estimation {
-  const base = baseHours[profile.task_type];
-  const raw =
-    base *
-    levelMultiplier[profile.complexity] *
-    levelMultiplier[profile.ambiguity] *
-    levelMultiplier[profile.dependencies] *
-    levelMultiplier[profile.review_load] *
-    (profile.expected_output_size === "high" ? 1.18 : profile.expected_output_size === "low" ? 0.9 : 1) *
-    (profile.coordination_load === "high" ? 1.18 : profile.coordination_load === "low" ? 0.93 : 1);
+export function scoreTask(profile: TaskProfile, aiTool: AiTool = "none"): Estimation {
+  // Step 1: without-AI point estimate from multiplier chain
+  const raw = BASE_HOURS[profile.task_type]
+    * COMPLEXITY_MULT[profile.complexity]
+    * AMBIGUITY_MULT[profile.ambiguity]
+    * DEPENDENCY_MULT[profile.dependencies]
+    * REVIEW_MULT[profile.review_load]
+    * RESEARCH_MULT[profile.research_load]
+    * OUTPUT_MULT[profile.expected_output_size]
+    * COORDINATION_MULT[profile.coordination_load];
 
-  const uncertainty =
-    0.18 +
-    (profile.ambiguity === "high" ? 0.2 : profile.ambiguity === "medium" ? 0.1 : 0.04) +
-    (profile.blocker_probability === "high" ? 0.12 : profile.blocker_probability === "medium" ? 0.06 : 0.02);
-
-  const savings = aiSavings[profile.ai_leverage] * (profile.review_load === "high" ? 0.88 : 1);
-  const withoutMin = Math.max(2, Math.round(raw * (1 - uncertainty)));
-  const withoutMax = Math.max(withoutMin + 1, Math.round(raw * (1 + uncertainty)));
-  const withMin = Math.max(1, Math.round(withoutMin * (1 - savings)));
-  const withMax = Math.max(withMin + 1, Math.round(withoutMax * (1 - savings * 0.82)));
-  const confidence = clamp(
-    86 -
-      (profile.ambiguity === "high" ? 18 : profile.ambiguity === "medium" ? 8 : 0) -
-      (profile.blocker_probability === "high" ? 14 : profile.blocker_probability === "medium" ? 7 : 0) -
-      (profile.dependencies === "high" ? 8 : 0),
-    42,
-    94
+  // Step 2: AI reduction — three factors, hard cap at AI_MAX_REDUCTION
+  const ai_reduction = clamp(
+    AI_BASE_LEVERAGE[profile.task_type]
+    * AI_SIGNAL_MODIFIER[profile.ai_leverage]
+    * AI_TOOL_CAPTURE[aiTool],
+    0,
+    AI_MAX_REDUCTION
   );
 
+  // Step 3: with-AI point estimate
+  const with_ai_point = raw * (1 - ai_reduction);
+
+  // Step 4: ranges from ambiguity table
+  const pct = AMBIGUITY_RANGE_PCT[profile.ambiguity];
+  const without_ai_min_hours = Math.max(2, Math.round(raw * (1 - pct)));
+  const without_ai_max_hours = Math.max(without_ai_min_hours + 1, Math.round(raw * (1 + pct)));
+  const with_ai_min_hours = Math.max(1, Math.round(with_ai_point * (1 - pct)));
+  const with_ai_max_hours = Math.max(with_ai_min_hours + 1, Math.round(with_ai_point * (1 + pct)));
+
+  // Step 5: confidence from tables
+  let confidence = CONFIDENCE_BASE;
+  if (profile.ambiguity === "high") confidence += CONFIDENCE_PENALTIES.high_ambiguity;
+  else if (profile.ambiguity === "medium") confidence += CONFIDENCE_PENALTIES.medium_ambiguity;
+  if (profile.dependencies === "high") confidence += CONFIDENCE_PENALTIES.high_dependencies;
+  if (profile.iteration_risk === "high") confidence += CONFIDENCE_PENALTIES.high_iteration_risk;
+  if (profile.blocker_probability === "high") confidence += CONFIDENCE_PENALTIES.high_blocker_probability;
+  else if (profile.blocker_probability === "medium") confidence += CONFIDENCE_PENALTIES.medium_blocker_probability;
+  if (profile.complexity === "low") confidence += CONFIDENCE_BONUSES.low_complexity;
+  confidence += CONFIDENCE_BONUSES.recognized_task_type; // always fires (task type was inferred)
+  confidence = clamp(confidence, 10, 95);
+
+  // Step 6: formula breakdown for the "How?" tooltip
+  const formulaSteps = [
+    `${BASE_HOURS[profile.task_type]}h base (${profile.task_type})`,
+    `× ${COMPLEXITY_MULT[profile.complexity]} complexity (${profile.complexity})`,
+    `× ${AMBIGUITY_MULT[profile.ambiguity]} ambiguity (${profile.ambiguity})`,
+    `× ${DEPENDENCY_MULT[profile.dependencies]} dependencies (${profile.dependencies})`,
+    `× ${REVIEW_MULT[profile.review_load]} review load (${profile.review_load})`,
+    `× ${RESEARCH_MULT[profile.research_load]} research load (${profile.research_load})`,
+    `= ${Math.round(raw * 10) / 10}h without AI`,
+    `AI reduction: ${Math.round(ai_reduction * 100)}% (${profile.task_type} base ${Math.round(AI_BASE_LEVERAGE[profile.task_type] * 100)}% × signal ${AI_SIGNAL_MODIFIER[profile.ai_leverage]} × tool ${AI_TOOL_CAPTURE[aiTool]})`,
+    `= ${Math.round(with_ai_point * 10) / 10}h with AI`
+  ];
+
   return {
-    without_ai_min_hours: withoutMin,
-    without_ai_max_hours: withoutMax,
-    with_ai_min_hours: withMin,
-    with_ai_max_hours: withMax,
-    time_saved_percent: Math.round(((withoutMax - withMax) / withoutMax) * 100),
+    without_ai_min_hours,
+    without_ai_max_hours,
+    with_ai_min_hours,
+    with_ai_max_hours,
+    time_saved_percent: Math.round(ai_reduction * 100),
     confidence_score: confidence,
     delay_risk: clamp(100 - confidence + (profile.coordination_load === "high" ? 12 : 4), 12, 84),
     juniorMultiplier: profile.required_seniority === "senior" ? 1.75 : 1.35,
-    seniorMultiplier: profile.required_seniority === "senior" ? 0.95 : 0.82
+    seniorMultiplier: profile.required_seniority === "senior" ? 0.95 : 0.82,
+    formulaSteps,
+    ai_reduction_pct: Math.round(ai_reduction * 100)
   };
 }
 
@@ -263,7 +291,7 @@ export function clarificationQuestions(profile: TaskProfile): string[] {
   return questions.slice(0, 4);
 }
 
-export function generateSubtasks(profile: TaskProfile): Subtask[] {
+export function generateSubtasks(profile: TaskProfile, rawHours: number): Subtask[] {
   const common: SubtaskSeed[] = [
     {
       title: "Confirm scope and acceptance criteria",
@@ -490,7 +518,7 @@ export function generateSubtasks(profile: TaskProfile): Subtask[] {
     ]
   };
 
-  return withSubtaskMetadata([...common, ...byType[profile.task_type]]);
+  return withSubtaskMetadata([...common, ...byType[profile.task_type]], rawHours);
 }
 
 function buildSources(): Source[] {
@@ -536,8 +564,8 @@ function buildSources(): Source[] {
   ];
 }
 
-export function buildExecutionPlan(profile: TaskProfile): ExecutionPlan {
-  const subtasks = generateSubtasks(profile);
+export function buildExecutionPlan(profile: TaskProfile, rawHours: number): ExecutionPlan {
+  const subtasks = generateSubtasks(profile, rawHours);
   const parallel = subtasks.filter((subtask) => subtask.parallelizable);
 
   return {
@@ -599,6 +627,7 @@ export function buildOptimization(
 type BuildAnalysisOptions = {
   id?: string;
   created_at?: string;
+  ai_tool?: AiTool;
 };
 
 export function buildAnalysis(
@@ -607,12 +636,13 @@ export function buildAnalysis(
   options: BuildAnalysisOptions = {}
 ): AnalysisResult {
   const profile = inferTaskProfile(`${ticket}\n${Object.values(answers).join("\n")}`);
-  const estimation = scoreTask(profile);
+  const estimation = scoreTask(profile, options.ai_tool ?? "none");
+  const rawHours = Math.round(estimation.without_ai_max_hours / (1 + AMBIGUITY_RANGE_PCT[profile.ambiguity]));
   const questions = clarificationQuestions(profile);
   const title = ticket.split(/[.\n]/)[0]?.replace(/^#+\s*/, "").slice(0, 86) || "Untitled task";
   const highRisk = profile.blocker_probability === "high" || profile.ambiguity === "high";
   const sources = buildSources();
-  const plan = buildExecutionPlan(profile);
+  const plan = buildExecutionPlan(profile, rawHours);
   const optimization = buildOptimization(profile, estimation, plan, sources);
   const now = new Date().toISOString();
 

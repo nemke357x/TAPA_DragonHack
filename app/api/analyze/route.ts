@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { buildAnalysis } from "@/lib/scoring";
+import { AiTool } from "@/lib/tables";
 
 export async function POST(request: Request) {
   const body = (await request.json()) as {
@@ -8,6 +9,7 @@ export async function POST(request: Request) {
     answers?: Record<string, string>;
     taskId?: string;
     createdAt?: string;
+    ai_tool?: AiTool;
   };
 
   const ticket = body.ticket?.trim();
@@ -17,7 +19,8 @@ export async function POST(request: Request) {
 
   const fallback = buildAnalysis(ticket, body.answers ?? {}, {
     id: body.taskId,
-    created_at: body.createdAt
+    created_at: body.createdAt,
+    ai_tool: body.ai_tool ?? "none"
   });
 
   if (!process.env.OPENAI_API_KEY) {

@@ -57,6 +57,7 @@ import {
   saveHistoryRecord
 } from "@/lib/storage";
 import { AnalysisResult } from "@/lib/types";
+import type { AiTool } from "@/lib/tables";
 import { cn, formatHours } from "@/lib/utils";
 
 type PageStep = "input" | "clarify" | "analyze" | "results" | "plan" | "optimize";
@@ -233,6 +234,7 @@ function EstimateApp() {
   const [githubUrl, setGithubUrl] = useState("");
   const [importNote, setImportNote] = useState("");
   const [error, setError] = useState("");
+  const [aiTool, setAiTool] = useState<AiTool>("none");
   const analysisKeyRef = useRef<string | null>(null);
 
   function routeFor(step: PageStep, taskId = activeTaskId) {
@@ -469,7 +471,8 @@ function EstimateApp() {
           ticket: trimmed,
           answers: payloadAnswers,
           taskId,
-          createdAt: taskCreatedAt
+          createdAt: taskCreatedAt,
+          ai_tool: aiTool
         })
       });
       const payload = await response.json();
@@ -580,6 +583,8 @@ function EstimateApp() {
                   importNote={importNote}
                   error={error}
                   selectExample={selectExample}
+                  aiTool={aiTool}
+                  setAiTool={setAiTool}
                 />
               )}
 
@@ -754,6 +759,12 @@ function TopProgress({
   );
 }
 
+const aiToolOptions: { value: AiTool; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "basic_llm", label: "Basic LLM / ChatGPT" },
+  { value: "coding_assistant", label: "Coding assistant / Copilot / Cursor" }
+];
+
 function InputScreen({
   taskText,
   setTaskText,
@@ -764,7 +775,9 @@ function InputScreen({
   importPlaceholder,
   importNote,
   error,
-  selectExample
+  selectExample,
+  aiTool,
+  setAiTool
 }: {
   taskText: string;
   setTaskText: (value: string) => void;
@@ -776,6 +789,8 @@ function InputScreen({
   importNote: string;
   error: string;
   selectExample: (ticket: string) => void;
+  aiTool: AiTool;
+  setAiTool: (value: AiTool) => void;
 }) {
   return (
     <div className="mx-auto flex max-w-4xl flex-col items-center py-4 text-center sm:py-8">
@@ -795,7 +810,25 @@ function InputScreen({
           placeholder="Build password reset flow with token expiry, email link, backend validation, and frontend reset form..."
         />
 
-        <div className="-mt-7 flex justify-center">
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+          <span className="text-xs font-black text-white/45">Your AI tool:</span>
+          {aiToolOptions.map((option) => (
+            <button
+              key={option.value}
+              onClick={() => setAiTool(option.value)}
+              className={cn(
+                "rounded-md border px-2.5 py-1.5 text-xs font-black transition",
+                aiTool === option.value
+                  ? "border-emerald-300/50 bg-emerald-300/15 text-emerald-200"
+                  : "border-white/10 bg-white/[0.04] text-white/55 hover:border-white/25 hover:text-white/80"
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-4 flex justify-center">
           <Button
             size="lg"
             className="h-12 min-w-48 bg-emerald-400 text-[#041014] hover:bg-emerald-300"
@@ -1068,6 +1101,20 @@ function ResultsScreen({
   onSave: () => void;
   saved: boolean;
 }) {
+  const [openFormula, setOpenFormula] = useState<"without" | "with" | null>(null);
+
+  const confidenceItems: { label: string; value: number; color: string }[] = [
+    { label: "Base", value: 80, color: "text-white/55" },
+    ...(result.profile.ambiguity === "high" ? [{ label: "High ambiguity", value: -25, color: "text-rose-300/80" }] : []),
+    ...(result.profile.ambiguity === "medium" ? [{ label: "Medium ambiguity", value: -8, color: "text-amber-300/80" }] : []),
+    ...(result.profile.dependencies === "high" ? [{ label: "High dependencies", value: -15, color: "text-rose-300/80" }] : []),
+    ...(result.profile.iteration_risk === "high" ? [{ label: "High iteration risk", value: -10, color: "text-rose-300/80" }] : []),
+    ...(result.profile.blocker_probability === "high" ? [{ label: "High blocker probability", value: -14, color: "text-rose-300/80" }] : []),
+    ...(result.profile.blocker_probability === "medium" ? [{ label: "Medium blocker probability", value: -7, color: "text-amber-300/80" }] : []),
+    ...(result.profile.complexity === "low" ? [{ label: "Low complexity", value: 5, color: "text-emerald-300/80" }] : []),
+    { label: "Recognized task type", value: 5, color: "text-emerald-300/80" }
+  ];
+
   return (
     <DarkFrame>
       <div className="space-y-5">
@@ -1098,22 +1145,89 @@ function ResultsScreen({
         </div>
 
         <div className="grid gap-3 md:grid-cols-4">
-          <Metric
-            label="Without AI"
-            value={formatHours(
-              result.estimation.without_ai_min_hours,
-              result.estimation.without_ai_max_hours
+          {/* Without AI card with How? */}
+          <div className="rounded-lg border border-white/10 bg-[#0a1c21] p-4">
+            <p className="text-xs font-black text-white/50">Without AI</p>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <p className="text-2xl font-black tracking-normal text-white">
+                {formatHours(result.estimation.without_ai_min_hours, result.estimation.without_ai_max_hours)}
+              </p>
+              <button
+                className="rounded border border-white/15 px-2 py-0.5 text-xs font-black text-white/40 transition hover:border-white/30 hover:text-white/70"
+                onClick={() => setOpenFormula(openFormula === "without" ? null : "without")}
+              >
+                How?
+              </button>
+            </div>
+            {openFormula === "without" && (
+              <ol className="mt-3 space-y-1 rounded-md border border-white/10 bg-[#07161b] p-3">
+                {result.estimation.formulaSteps.map((step, i) => (
+                  <li key={i} className="text-xs text-white/60">
+                    <span className="mr-1.5 font-black text-white/30">{i + 1}.</span>{step}
+                  </li>
+                ))}
+              </ol>
             )}
-          />
-          <Metric
-            label="With AI"
-            value={formatHours(
-              result.estimation.with_ai_min_hours,
-              result.estimation.with_ai_max_hours
+          </div>
+
+          {/* With AI card with How? */}
+          <div className="rounded-lg border border-white/10 bg-[#0a1c21] p-4">
+            <p className="text-xs font-black text-white/50">With AI</p>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <p className="text-2xl font-black tracking-normal text-emerald-300">
+                {formatHours(result.estimation.with_ai_min_hours, result.estimation.with_ai_max_hours)}
+              </p>
+              <button
+                className="rounded border border-white/15 px-2 py-0.5 text-xs font-black text-white/40 transition hover:border-white/30 hover:text-white/70"
+                onClick={() => setOpenFormula(openFormula === "with" ? null : "with")}
+              >
+                How?
+              </button>
+            </div>
+            {openFormula === "with" && (
+              <ol className="mt-3 space-y-1 rounded-md border border-white/10 bg-[#07161b] p-3">
+                {result.estimation.formulaSteps.map((step, i) => (
+                  <li key={i} className="text-xs text-white/60">
+                    <span className="mr-1.5 font-black text-white/30">{i + 1}.</span>{step}
+                  </li>
+                ))}
+              </ol>
             )}
-          />
+          </div>
+
           <Metric label="Time saved" value={`${result.estimation.time_saved_percent}%`} green />
-          <Metric label="Confidence" value={`${result.estimation.confidence_score}%`} />
+
+          {/* Confidence card with bar and hover tooltip */}
+          <div className="group relative rounded-lg border border-white/10 bg-[#0a1c21] p-4">
+            <p className="text-xs font-black text-white/50">Confidence</p>
+            <p className="mt-2 text-2xl font-black tracking-normal text-white">
+              {result.estimation.confidence_score}%
+            </p>
+            <div className="mt-2 h-1.5 rounded-full bg-white/10">
+              <div
+                className={cn(
+                  "h-1.5 rounded-full",
+                  result.estimation.confidence_score >= 75
+                    ? "bg-emerald-400"
+                    : result.estimation.confidence_score >= 55
+                      ? "bg-amber-400"
+                      : "bg-rose-400"
+                )}
+                style={{ width: `${result.estimation.confidence_score}%` }}
+              />
+            </div>
+            <div className="pointer-events-none absolute left-0 top-full z-10 mt-1 hidden w-60 rounded-lg border border-white/10 bg-[#07161b] p-3 text-xs shadow-lg group-hover:block">
+              <p className="mb-2 font-black text-white/70">Score breakdown</p>
+              <div className="space-y-1">
+                {confidenceItems.map((item) => (
+                  <div key={item.label} className={cn("flex justify-between", item.color)}>
+                    <span>{item.label}</span>
+                    <span className="font-black">{item.value > 0 ? `+${item.value}` : item.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
@@ -1181,22 +1295,45 @@ function PlanScreen({
 
         <div className="grid gap-4 lg:grid-cols-[1.25fr_1fr]">
           <Panel title="Subtasks">
-            <div className="space-y-4">
-              {result.plan.subtasks.map((subtask, index) => (
-                <div
-                  key={subtask.title}
-                  className="grid gap-3 text-sm sm:grid-cols-[28px_1fr_56px_72px_84px] sm:items-center"
-                >
-                  <span className="font-black text-white/70">{index + 1}.</span>
-                  <div>
-                    <p className="font-black text-white/90">{subtask.title}</p>
-                    <p className="mt-1 text-xs text-white/40">{subtask.owner}</p>
-                  </div>
-                  <span className="font-bold text-white/60">{subtask.sharePercent}%</span>
-                  <Tag tone={subtask.aiHelpfulnessTag}>{subtask.aiHelpfulnessTag}</Tag>
-                  <Tag tone={subtask.priority}>{subtask.priority}</Tag>
-                </div>
-              ))}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-white/10 text-left text-xs font-black text-white/40">
+                    <th className="pb-2 pr-3">#</th>
+                    <th className="pb-2 pr-3">Task / Owner</th>
+                    <th className="pb-2 pr-3">Share</th>
+                    <th className="pb-2 pr-3">AI help</th>
+                    <th className="pb-2 pr-3">Priority</th>
+                    <th className="pb-2 pr-3 text-right">No AI</th>
+                    <th className="pb-2 text-right">With AI</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/[0.05]">
+                  {result.plan.subtasks.map((subtask, index) => (
+                    <tr key={subtask.title} className="align-middle">
+                      <td className="py-3 pr-3 font-black text-white/70">{index + 1}.</td>
+                      <td className="py-3 pr-3">
+                        <p className="font-black text-white/90">{subtask.title}</p>
+                        <p className="mt-0.5 text-xs text-white/40">{subtask.owner}</p>
+                      </td>
+                      <td className="py-3 pr-3 font-bold text-white/60">{subtask.sharePercent}%</td>
+                      <td className="py-3 pr-3"><Tag tone={subtask.aiHelpfulnessTag}>{subtask.aiHelpfulnessTag}</Tag></td>
+                      <td className="py-3 pr-3"><Tag tone={subtask.priority}>{subtask.priority}</Tag></td>
+                      <td className="py-3 pr-3 text-right font-bold text-white/60">{subtask.without_ai_hours}h</td>
+                      <td className="py-3 text-right font-bold text-emerald-300">{subtask.with_ai_hours}h</td>
+                    </tr>
+                  ))}
+                  <tr className="border-t border-white/20">
+                    <td className="pt-3 pr-3 font-black text-white/70" colSpan={5}>Total</td>
+                    <td className="pt-3 pr-3 text-right font-black text-white">
+                      {Math.round(result.plan.subtasks.reduce((s, t) => s + t.without_ai_hours, 0) * 10) / 10}h
+                    </td>
+                    <td className="pt-3 text-right font-black text-emerald-300">
+                      {Math.round(result.plan.subtasks.reduce((s, t) => s + t.with_ai_hours, 0) * 10) / 10}h
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </Panel>
 
