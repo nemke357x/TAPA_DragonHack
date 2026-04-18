@@ -7,15 +7,17 @@ import {
   Brain,
   Check,
   CheckCircle2,
-  ClipboardList,
+  ChevronRight,
   Clock3,
   Database,
   FileText,
   Github,
-  GitPullRequest,
+  History,
   Layers3,
   Loader2,
   MessageSquare,
+  Plus,
+  RefreshCcw,
   Save,
   ShieldAlert,
   Sparkles,
@@ -23,12 +25,19 @@ import {
   Workflow,
   Zap
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import type { LucideIcon } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import type { Dispatch, MouseEventHandler, ReactElement, ReactNode, SetStateAction } from "react";
 import {
   Bar,
   BarChart,
   CartesianGrid,
   Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -38,60 +47,61 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { demoTasks } from "@/lib/demo-data";
-import { saveResult } from "@/lib/supabase";
+import { clarificationQuestions, inferTaskProfile, scoreTask } from "@/lib/scoring";
+import {
+  clearDraft,
+  loadDraft,
+  loadHistoryRecords,
+  loadRemoteHistoryRecords,
+  saveDraft,
+  saveHistoryRecord
+} from "@/lib/storage";
 import { AnalysisResult } from "@/lib/types";
 import { cn, formatHours } from "@/lib/utils";
 
 type PageStep = "input" | "clarify" | "analyze" | "results" | "plan" | "optimize";
 
-const productSteps: { id: PageStep; label: string }[] = [
-  { id: "input", label: "Input" },
-  { id: "clarify", label: "Clarify" },
-  { id: "analyze", label: "Analyze" },
-  { id: "results", label: "Results" },
-  { id: "plan", label: "Plan" },
-  { id: "optimize", label: "Optimize" }
+const productSteps: { id: PageStep; label: string; short: string }[] = [
+  { id: "input", label: "Input", short: "Understand" },
+  { id: "clarify", label: "Clarify", short: "Clarify" },
+  { id: "analyze", label: "Analyze", short: "Analyze" },
+  { id: "results", label: "Results", short: "Estimate" },
+  { id: "plan", label: "Plan", short: "Plan" },
+  { id: "optimize", label: "Optimize", short: "Optimize" }
 ];
 
 const analyzeStages = [
-  "Understanding task",
-  "Detecting complexity and dependencies",
-  "Calculating effort without AI",
-  "Calculating effort with AI",
+  "Understanding the task",
+  "Detecting complexity & dependencies",
+  "Calculating effort (without AI)",
+  "Calculating effort (with AI)",
   "Building execution plan"
 ];
 
-const optionalFields = [
-  {
-    key: "quality level",
-    label: "Quality level",
-    placeholder: "MVP, production-ready, security-sensitive..."
-  },
-  {
-    key: "known blockers",
-    label: "Known blockers",
-    placeholder: "Waiting on API contract, unclear permissions..."
-  },
-  {
-    key: "review requirements",
-    label: "Review requirements",
-    placeholder: "Security review, product approval, design QA..."
-  },
-  {
-    key: "team context",
-    label: "Team context",
-    placeholder: "Junior owner, senior reviewer, backend available..."
-  }
+const defaultTask = "";
+
+const defaultClarifiers = [
+  "Is the main backend or API already available?",
+  "Does the design or desired output already exist?",
+  "Does this need production-ready tests?",
+  "Who needs to review or approve this before release?"
 ];
 
-const fallbackTicket =
-  "Build password reset flow with token expiry, email link, backend validation, and frontend reset form.";
+const chartColors = ["#35d399", "#22d3ee", "#facc15", "#fb7185", "#a7f3d0", "#93c5fd"];
 
-function stepNumber(step: PageStep) {
+function isStep(value: string | null): value is PageStep {
+  return productSteps.some((step) => step.id === value);
+}
+
+function stepIndex(step: PageStep) {
   return productSteps.findIndex((item) => item.id === step);
 }
 
-function answerPayload(answers: Record<string, string>) {
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function makeAnswersPayload(answers: Record<string, string>) {
   return Object.fromEntries(
     Object.entries(answers)
       .filter(([, value]) => value.trim())
@@ -99,60 +109,402 @@ function answerPayload(answers: Record<string, string>) {
   );
 }
 
+function generateQuestions(text: string) {
+  const profile = inferTaskProfile(text);
+  return Array.from(new Set([...clarificationQuestions(profile), ...defaultClarifiers])).slice(0, 4);
+}
+
+function averageRange(min: number, max: number) {
+  return Math.round((min + max) / 2);
+}
+
+function shortDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
+function dayLabel(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric"
+  }).format(new Date(`${value}T00:00:00`));
+}
+
+function buildHistorySeries(history: AnalysisResult[]) {
+  const grouped = new Map<
+    string,
+    { tasks: number; without: number; withAi: number; saved: number }
+  >();
+
+  history.forEach((record) => {
+    const day = new Date(record.created_at).toISOString().slice(0, 10);
+    const current = grouped.get(day) ?? { tasks: 0, without: 0, withAi: 0, saved: 0 };
+    grouped.set(day, {
+      tasks: current.tasks + 1,
+      without:
+        current.without +
+        averageRange(
+          record.estimation.without_ai_min_hours,
+          record.estimation.without_ai_max_hours
+        ),
+      withAi:
+        current.withAi +
+        averageRange(record.estimation.with_ai_min_hours, record.estimation.with_ai_max_hours),
+      saved: current.saved + record.estimation.time_saved_percent
+    });
+  });
+
+  return Array.from(grouped.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, values]) => ({
+      day: dayLabel(day),
+      tasks: values.tasks,
+      avgWithout: Math.round(values.without / values.tasks),
+      avgWith: Math.round(values.withAi / values.tasks),
+      avgSaved: Math.round(values.saved / values.tasks)
+    }));
+}
+
+function buildDistribution(
+  history: AnalysisResult[],
+  getKey: (record: AnalysisResult) => string
+) {
+  const counts = new Map<string, number>();
+  history.forEach((record) => {
+    const key = getKey(record);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  });
+
+  return Array.from(counts.entries()).map(([name, value]) => ({ name, value }));
+}
+
+function confidenceBucket(score: number) {
+  if (score >= 85) return "85-100";
+  if (score >= 75) return "75-84";
+  if (score >= 60) return "60-74";
+  return "< 60";
+}
+
 export default function Home() {
-  const [currentStep, setCurrentStep] = useState<PageStep>("input");
-  const [ticket, setTicket] = useState(fallbackTicket);
+  return (
+    <Suspense fallback={<ShellLoading />}>
+      <EstimateApp />
+    </Suspense>
+  );
+}
+
+function ShellLoading() {
+  return (
+    <main className="min-h-screen bg-[#041014] text-white">
+      <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4">
+        <div className="flex items-center gap-3 text-sm font-bold text-white/60">
+          <Loader2 className="h-4 w-4 animate-spin text-emerald-300" />
+          Loading EstiMate AI
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function EstimateApp() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const stepParam = searchParams.get("step");
+  const activeStep: PageStep = isStep(stepParam) ? stepParam : "input";
+  const showHistory = searchParams.get("view") === "history";
+  const taskFromUrl = searchParams.get("task");
+
+  const [hydrated, setHydrated] = useState(false);
+  const [taskText, setTaskText] = useState(defaultTask);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [createdAt, setCreatedAt] = useState<string | null>(null);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [questions, setQuestions] = useState<string[]>([]);
+  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [history, setHistory] = useState<AnalysisResult[]>([]);
+  const [loadingStage, setLoadingStage] = useState(0);
+  const [stageDetail, setStageDetail] = useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [githubUrl, setGithubUrl] = useState("");
   const [importNote, setImportNote] = useState("");
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [draftResult, setDraftResult] = useState<AnalysisResult | null>(null);
-  const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [loadingStage, setLoadingStage] = useState(0);
-  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+  const analysisKeyRef = useRef<string | null>(null);
 
-  const metricChart = useMemo(() => {
-    if (!result) return [];
-    return [
-      { name: "Without AI", value: result.estimation.without_ai_max_hours },
-      { name: "With AI", value: result.estimation.with_ai_max_hours }
-    ];
-  }, [result]);
+  function routeFor(step: PageStep, taskId = activeTaskId) {
+    const params = new URLSearchParams();
+    params.set("step", step);
+    if (taskId) params.set("task", taskId);
+    return `/?${params.toString()}`;
+  }
 
-  async function requestAnalysis(target: "clarify" | "results") {
-    setCurrentStep("analyze");
-    setLoadingStage(0);
+  function navigate(step: PageStep, options: { replace?: boolean; taskId?: string | null } = {}) {
+    const target = routeFor(step, options.taskId === undefined ? activeTaskId : options.taskId);
+    if (options.replace) {
+      router.replace(target);
+    } else {
+      router.push(target);
+    }
+  }
+
+  function openHistoryView() {
+    router.push("/?view=history");
+  }
+
+  function restoreRecord(record: AnalysisResult) {
+    setActiveTaskId(record.id);
+    setCreatedAt(record.created_at);
+    setTaskText(record.raw_input);
+    setAnswers(record.clarification_answers ?? record.answeredClarifications ?? {});
+    setQuestions(record.clarifyingQuestions.length ? record.clarifyingQuestions : generateQuestions(record.raw_input));
+    setResult(record);
+    setSaved(true);
+    setError("");
+  }
+
+  function newTask() {
+    clearDraft();
+    setTaskText("");
+    setActiveTaskId(null);
+    setCreatedAt(null);
+    setAnswers({});
+    setQuestions([]);
+    setResult(null);
     setSaved(false);
+    setGithubUrl("");
+    setImportNote("");
+    setError("");
+    analysisKeyRef.current = null;
+    router.push("/?step=input");
+  }
 
-    const timer = window.setInterval(() => {
-      setLoadingStage((stage) => Math.min(stage + 1, analyzeStages.length - 1));
-    }, 420);
+  useEffect(() => {
+    const localHistory = loadHistoryRecords();
+    const draft = loadDraft();
+    setHistory(localHistory);
+
+    const urlRecord = taskFromUrl
+      ? localHistory.find((record) => record.id === taskFromUrl) ?? null
+      : null;
+
+    if (urlRecord) {
+      restoreRecord(urlRecord);
+    } else if (draft) {
+      setActiveTaskId(draft.id);
+      setCreatedAt(draft.created_at);
+      setTaskText(draft.raw_input);
+      setAnswers(draft.clarification_answers ?? {});
+      setQuestions(draft.clarifyingQuestions ?? []);
+      setResult(draft.result);
+      setGithubUrl(draft.githubUrl ?? "");
+      setImportNote(draft.importNote ?? "");
+      setSaved(Boolean(draft.result));
+    }
+
+    setHydrated(true);
+
+    loadRemoteHistoryRecords().then((remoteHistory) => {
+      if (remoteHistory.length === 0) return;
+      setHistory(remoteHistory);
+      if (taskFromUrl) {
+        const remoteRecord = remoteHistory.find((record) => record.id === taskFromUrl);
+        if (remoteRecord) restoreRecord(remoteRecord);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated || !taskFromUrl) return;
+    const record = history.find((item) => item.id === taskFromUrl);
+    if (record && record.id !== result?.id) {
+      restoreRecord(record);
+    }
+  }, [history, hydrated, result?.id, taskFromUrl]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+
+    saveDraft({
+      id: activeTaskId,
+      raw_input: taskText,
+      created_at: createdAt,
+      clarification_answers: answers,
+      clarifyingQuestions: questions,
+      result,
+      githubUrl,
+      importNote,
+      updated_at: new Date().toISOString()
+    });
+  }, [activeTaskId, answers, createdAt, githubUrl, hydrated, importNote, questions, result, taskText]);
+
+  useEffect(() => {
+    if (!hydrated || showHistory) return;
+
+    if (activeStep !== "input" && !taskText.trim() && !result) {
+      router.replace("/?step=input");
+      return;
+    }
+
+    if ((activeStep === "results" || activeStep === "plan" || activeStep === "optimize") && !result) {
+      router.replace("/?step=input");
+    }
+  }, [activeStep, hydrated, result, router, showHistory, taskText]);
+
+  useEffect(() => {
+    if (!hydrated || showHistory || activeStep !== "analyze") return;
+    if (!taskText.trim() || isAnalyzing) return;
+    if (result && result.id === activeTaskId) return;
+
+    runAnalysis();
+  }, [activeStep, activeTaskId, hydrated, isAnalyzing, result, showHistory, taskText]);
+
+  const historySeries = useMemo(() => buildHistorySeries(history), [history]);
+  const taskTypeDistribution = useMemo(
+    () => buildDistribution(history, (record) => record.profile.task_type),
+    [history]
+  );
+  const confidenceDistribution = useMemo(
+    () => buildDistribution(history, (record) => confidenceBucket(record.estimation.confidence_score)),
+    [history]
+  );
+
+  const canVisit = (step: PageStep) => {
+    if (step === "input") return true;
+    if (step === "clarify" || step === "analyze") return Boolean(taskText.trim());
+    return Boolean(result);
+  };
+
+  function handleTaskTextChange(value: string) {
+    setTaskText(value);
+    setError("");
+    if (result && value !== result.raw_input) {
+      setResult(null);
+      setActiveTaskId(null);
+      setCreatedAt(null);
+      setAnswers({});
+      setQuestions([]);
+      setSaved(false);
+      analysisKeyRef.current = null;
+    }
+  }
+
+  function selectExample(ticket: string) {
+    handleTaskTextChange(ticket);
+    setImportNote("");
+  }
+
+  function beginClarify() {
+    const trimmed = taskText.trim();
+    if (!trimmed) {
+      setError("Paste a task description first.");
+      return;
+    }
+
+    const id = activeTaskId ?? crypto.randomUUID();
+    const created = createdAt ?? new Date().toISOString();
+    setActiveTaskId(id);
+    setCreatedAt(created);
+    setQuestions(generateQuestions(trimmed));
+    setResult(null);
+    setSaved(false);
+    setError("");
+    navigate("clarify", { taskId: id });
+  }
+
+  function continueToAnalyze() {
+    setResult(null);
+    setSaved(false);
+    analysisKeyRef.current = null;
+    navigate("analyze");
+  }
+
+  async function runAnalysis() {
+    const trimmed = taskText.trim();
+    if (!trimmed) return;
+
+    const taskId = activeTaskId ?? crypto.randomUUID();
+    const taskCreatedAt = createdAt ?? new Date().toISOString();
+    const payloadAnswers = makeAnswersPayload(answers);
+    const runKey = `${taskId}:${trimmed}:${JSON.stringify(payloadAnswers)}`;
+
+    if (analysisKeyRef.current === runKey) return;
+    analysisKeyRef.current = runKey;
+    setActiveTaskId(taskId);
+    setCreatedAt(taskCreatedAt);
+    setIsAnalyzing(true);
+    setLoadingStage(0);
+    setStageDetail("Parsing raw task text into a structured profile.");
+    setError("");
 
     try {
+      const localProfile = inferTaskProfile(`${trimmed}\n${Object.values(payloadAnswers).join("\n")}`);
+      await sleep(420);
+      setLoadingStage(1);
+      setStageDetail(
+        `Detected ${localProfile.complexity} complexity, ${localProfile.dependencies} dependencies, and ${localProfile.ambiguity} ambiguity.`
+      );
+
+      const localEstimate = scoreTask(localProfile);
+      await sleep(420);
+      setLoadingStage(2);
+      setStageDetail(
+        `Without AI range: ${formatHours(
+          localEstimate.without_ai_min_hours,
+          localEstimate.without_ai_max_hours
+        )}.`
+      );
+
+      await sleep(420);
+      setLoadingStage(3);
+      setStageDetail("Applying AI leverage rules and optional model-enhanced explanation.");
+
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticket, answers: answerPayload(answers) })
+        body: JSON.stringify({
+          ticket: trimmed,
+          answers: payloadAnswers,
+          taskId,
+          createdAt: taskCreatedAt
+        })
       });
       const payload = await response.json();
-      const nextResult = payload.result as AnalysisResult;
 
-      setDraftResult(nextResult);
-
-      if (target === "clarify" && nextResult.clarifyingQuestions.length > 0) {
-        setCurrentStep("clarify");
-        return;
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Analysis failed.");
       }
 
+      const nextResult = payload.result as AnalysisResult;
+      await sleep(360);
+      setLoadingStage(4);
+      setStageDetail("Building the saved execution plan, blockers, accelerators, and optimization.");
+
+      const nextHistory = await saveHistoryRecord(nextResult);
+      setHistory(nextHistory);
       setResult(nextResult);
-      setCurrentStep("results");
+      setQuestions(nextResult.clarifyingQuestions.length ? nextResult.clarifyingQuestions : questions);
+      setSaved(true);
+
+      await sleep(520);
+      navigate("results", { replace: true, taskId: nextResult.id });
+    } catch (analysisError) {
+      setError(analysisError instanceof Error ? analysisError.message : "Analysis failed.");
+      analysisKeyRef.current = null;
     } finally {
-      window.clearInterval(timer);
-      setLoadingStage(analyzeStages.length - 1);
+      setIsAnalyzing(false);
     }
   }
 
   async function importGithubIssue() {
-    if (!githubUrl.trim()) return;
+    if (!githubUrl.trim()) {
+      setImportNote("Paste a GitHub issue URL first.");
+      return;
+    }
+
     setImportNote("Importing GitHub issue...");
 
     try {
@@ -164,10 +516,10 @@ export default function Home() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error);
 
-      setTicket(payload.importedText);
+      handleTaskTextChange(payload.importedText);
       setImportNote(`Imported "${payload.title}" from GitHub.`);
-    } catch (error) {
-      setImportNote(error instanceof Error ? error.message : "GitHub import failed.");
+    } catch (importError) {
+      setImportNote(importError instanceof Error ? importError.message : "GitHub import failed.");
     }
   }
 
@@ -177,219 +529,312 @@ export default function Home() {
 
   async function saveCurrentResult() {
     if (!result) return;
-    await saveResult(result);
+    const nextHistory = await saveHistoryRecord(result);
+    setHistory(nextHistory);
     setSaved(true);
   }
 
+  function openRecord(record: AnalysisResult, step: PageStep = "results") {
+    restoreRecord(record);
+    navigate(step, { taskId: record.id });
+  }
+
   return (
-    <main className="min-h-screen bg-[#f6f7f7] px-4 py-6 text-[#0f1720] sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-7xl">
-        <header className="mb-6 text-center">
-          <h1 className="text-3xl font-black tracking-normal sm:text-5xl">
-            EstiMate AI - From Task to Actionable Plan in Seconds
-          </h1>
-        </header>
+    <main className="min-h-screen bg-[#041014] text-white">
+      <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 py-4 sm:px-6">
+        <AppHeader
+          onHistory={openHistoryView}
+          onNewTask={newTask}
+          historyCount={history.length}
+        />
 
-        <section className="rounded-lg border border-slate-200 bg-white p-3 shadow-soft">
-          <div className="grid gap-3 lg:grid-cols-[250px_1fr]">
-            <aside className="rounded-lg bg-[#06131a] p-4 text-white">
-              <div className="mb-5 flex items-center gap-2">
-                <Sparkles className="h-5 w-5 text-emerald-300" />
-                <span className="font-black text-emerald-300">EstiMate AI</span>
-              </div>
-              <StepRail currentStep={currentStep} />
-              <div className="mt-6 rounded-lg border border-white/8 bg-white/5 p-3">
-                <p className="text-xs font-bold text-white/70">Planning engine</p>
-                <p className="mt-2 text-xs leading-5 text-white/50">
-                  The app uses AI for structure and explanation, while hour ranges come from a
-                  deterministic scoring engine.
-                </p>
-              </div>
-            </aside>
+        {showHistory ? (
+          <HistoryScreen
+            history={history}
+            historySeries={historySeries}
+            taskTypeDistribution={taskTypeDistribution}
+            confidenceDistribution={confidenceDistribution}
+            onOpenRecord={openRecord}
+            onBack={() => navigate(result ? "results" : "input")}
+          />
+        ) : (
+          <>
+            <TopProgress
+              currentStep={activeStep}
+              canVisit={canVisit}
+              onStepClick={(step) => {
+                if (canVisit(step)) navigate(step);
+              }}
+            />
 
-            <section className="min-h-[620px] rounded-lg bg-[#06131a] p-4 text-white sm:p-6">
-              <TopProgress currentStep={currentStep} />
-
-              {currentStep === "input" && (
+            <section className="flex-1">
+              {activeStep === "input" && (
                 <InputScreen
-                  ticket={ticket}
-                  setTicket={setTicket}
+                  taskText={taskText}
+                  setTaskText={handleTaskTextChange}
+                  onAnalyze={beginClarify}
                   githubUrl={githubUrl}
                   setGithubUrl={setGithubUrl}
-                  importNote={importNote}
                   importGithubIssue={importGithubIssue}
                   importPlaceholder={importPlaceholder}
-                  onAnalyze={() => requestAnalysis("clarify")}
+                  importNote={importNote}
+                  error={error}
+                  selectExample={selectExample}
                 />
               )}
 
-              {currentStep === "clarify" && (
+              {activeStep === "clarify" && (
                 <ClarifyScreen
-                  questions={draftResult?.clarifyingQuestions ?? []}
+                  questions={questions.length ? questions : generateQuestions(taskText)}
                   answers={answers}
                   setAnswers={setAnswers}
-                  onBack={() => setCurrentStep("input")}
-                  onContinue={() => requestAnalysis("results")}
+                  onBack={() => navigate("input")}
+                  onContinue={continueToAnalyze}
                 />
               )}
 
-              {currentStep === "analyze" && <AnalyzeScreen loadingStage={loadingStage} />}
+              {activeStep === "analyze" && (
+                <AnalyzeScreen
+                  loadingStage={loadingStage}
+                  stageDetail={stageDetail}
+                  error={error}
+                  isAnalyzing={isAnalyzing}
+                  result={result}
+                  onBack={() => navigate("clarify")}
+                  onContinue={() => navigate("results")}
+                  onRetry={() => {
+                    analysisKeyRef.current = null;
+                    runAnalysis();
+                  }}
+                />
+              )}
 
-              {currentStep === "results" && result && (
+              {activeStep === "results" && result && (
                 <ResultsScreen
                   result={result}
-                  chartData={metricChart}
+                  onBack={() => navigate("analyze")}
+                  onPlan={() => navigate("plan")}
+                  onOptimize={() => navigate("optimize")}
                   onSave={saveCurrentResult}
                   saved={saved}
-                  onPlan={() => setCurrentStep("plan")}
-                  onBack={() => setCurrentStep("clarify")}
                 />
               )}
 
-              {currentStep === "plan" && result && (
+              {activeStep === "plan" && result && (
                 <PlanScreen
                   result={result}
-                  onBack={() => setCurrentStep("results")}
-                  onOptimize={() => setCurrentStep("optimize")}
+                  onBack={() => navigate("results")}
+                  onOptimize={() => navigate("optimize")}
                 />
               )}
 
-              {currentStep === "optimize" && result && (
-                <OptimizeScreen result={result} onBack={() => setCurrentStep("plan")} />
+              {activeStep === "optimize" && result && (
+                <OptimizeScreen
+                  result={result}
+                  onBack={() => navigate("plan")}
+                  onResults={() => navigate("results")}
+                />
               )}
             </section>
-          </div>
-        </section>
-
-        <FlowBar />
+          </>
+        )}
       </div>
     </main>
   );
 }
 
-function StepRail({ currentStep }: { currentStep: PageStep }) {
-  const activeIndex = stepNumber(currentStep);
-
+function AppHeader({
+  onHistory,
+  onNewTask,
+  historyCount
+}: {
+  onHistory: () => void;
+  onNewTask: () => void;
+  historyCount: number;
+}) {
   return (
-    <div className="space-y-2">
-      {productSteps.map((step, index) => {
-        const done = index < activeIndex;
-        const active = index === activeIndex;
+    <header className="mb-4 flex items-center justify-between gap-3 border-b border-white/10 pb-4">
+      <button className="flex items-center gap-2 text-left" onClick={onNewTask}>
+        <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-300/25 bg-emerald-300/10">
+          <Sparkles className="h-4 w-4 text-emerald-300" />
+        </span>
+        <span className="font-black text-emerald-300">EstiMate AI</span>
+      </button>
 
-        return (
-          <div
-            key={step.id}
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-bold text-white/45",
-              active && "bg-emerald-400/12 text-emerald-200",
-              done && "text-white/76"
-            )}
-          >
-            <span
-              className={cn(
-                "flex h-6 w-6 items-center justify-center rounded-full border border-white/15 text-xs",
-                active && "border-emerald-300 bg-emerald-300 text-[#06131a]",
-                done && "border-emerald-300/50 bg-emerald-300/18 text-emerald-200"
-              )}
-            >
-              {done ? <Check className="h-3.5 w-3.5" /> : index + 1}
-            </span>
-            {step.label}
-          </div>
-        );
-      })}
-    </div>
+      <nav className="hidden items-center gap-6 text-xs font-bold text-white/60 md:flex">
+        <span>How it works</span>
+        <span>Integrations</span>
+        <span>Pricing</span>
+      </nav>
+
+      <div className="flex items-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-9 border border-white/10 bg-white/[0.04] text-white/70 hover:bg-white/10 hover:text-white"
+          onClick={onHistory}
+        >
+          <History className="h-4 w-4" />
+          <span className="hidden sm:inline">History</span>
+          <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px]">{historyCount}</span>
+        </Button>
+        <Button
+          size="sm"
+          className="h-9 bg-emerald-400 text-[#041014] hover:bg-emerald-300"
+          onClick={onNewTask}
+        >
+          <Plus className="h-4 w-4" />
+          <span className="hidden sm:inline">New</span>
+        </Button>
+      </div>
+    </header>
   );
 }
 
-function TopProgress({ currentStep }: { currentStep: PageStep }) {
-  const current = stepNumber(currentStep);
+function TopProgress({
+  currentStep,
+  canVisit,
+  onStepClick
+}: {
+  currentStep: PageStep;
+  canVisit: (step: PageStep) => boolean;
+  onStepClick: (step: PageStep) => void;
+}) {
+  const activeIndex = stepIndex(currentStep);
 
   return (
-    <div className="mb-8 grid grid-cols-6 gap-2">
-      {productSteps.map((step, index) => (
-        <div key={step.id}>
-          <div
-            className={cn(
-              "h-0.5 rounded-full bg-white/12",
-              index <= current && "bg-emerald-300"
-            )}
-          />
-          <div
-            className={cn(
-              "mt-2 hidden text-center text-[11px] font-bold text-white/36 sm:block",
-              index === current && "text-emerald-200"
-            )}
-          >
-            {step.label}
-          </div>
-        </div>
-      ))}
+    <div className="mx-auto mb-6 w-full max-w-5xl">
+      <div className="grid grid-cols-6 gap-2">
+        {productSteps.map((step, index) => {
+          const active = index === activeIndex;
+          const done = index < activeIndex;
+          const available = canVisit(step.id);
+
+          return (
+            <button
+              key={step.id}
+              className={cn(
+                "group min-w-0 text-center",
+                !available && "cursor-not-allowed opacity-45"
+              )}
+              disabled={!available}
+              onClick={() => onStepClick(step.id)}
+            >
+              <div className="flex items-center">
+                <span
+                  className={cn(
+                    "mx-auto flex h-5 w-5 items-center justify-center rounded-full border border-white/20 bg-[#07181c] text-[10px] font-black text-white/40",
+                    active && "border-emerald-300 bg-emerald-300 text-[#041014]",
+                    done && "border-emerald-300/70 bg-emerald-300/20 text-emerald-200"
+                  )}
+                >
+                  {done ? <Check className="h-3 w-3" /> : index + 1}
+                </span>
+              </div>
+              <div
+                className={cn(
+                  "mt-2 h-0.5 rounded-full bg-white/10",
+                  (active || done) && "bg-emerald-300"
+                )}
+              />
+              <p
+                className={cn(
+                  "mt-2 truncate text-[11px] font-bold text-white/35",
+                  active && "text-emerald-200",
+                  done && "text-white/60"
+                )}
+              >
+                {step.short}
+              </p>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 function InputScreen({
-  ticket,
-  setTicket,
+  taskText,
+  setTaskText,
+  onAnalyze,
   githubUrl,
   setGithubUrl,
-  importNote,
   importGithubIssue,
   importPlaceholder,
-  onAnalyze
+  importNote,
+  error,
+  selectExample
 }: {
-  ticket: string;
-  setTicket: (value: string) => void;
+  taskText: string;
+  setTaskText: (value: string) => void;
+  onAnalyze: () => void;
   githubUrl: string;
   setGithubUrl: (value: string) => void;
-  importNote: string;
   importGithubIssue: () => void;
   importPlaceholder: (name: string) => void;
-  onAnalyze: () => void;
+  importNote: string;
+  error: string;
+  selectExample: (ticket: string) => void;
 }) {
   return (
-    <div className="mx-auto flex max-w-4xl flex-col items-center text-center">
-      <Badge tone="teal" className="border-emerald-300/20 bg-emerald-300/10 text-emerald-200">
-        Workflow-first estimation
-      </Badge>
-      <h2 className="mt-5 max-w-2xl text-4xl font-black leading-tight tracking-normal sm:text-5xl">
+    <div className="mx-auto flex max-w-4xl flex-col items-center py-4 text-center sm:py-8">
+      <h1 className="max-w-2xl text-4xl font-black leading-tight tracking-normal sm:text-5xl">
         Estimate software work for the AI era
-      </h2>
-      <p className="mt-4 max-w-xl text-sm leading-6 text-white/58">
-        Paste a task, import context, answer the questions that matter, and turn vague work into a
-        scoped estimate and execution plan.
+      </h1>
+      <p className="mt-4 max-w-lg text-sm leading-6 text-white/60">
+        Paste a task, compare with and without AI, and get subtasks, blockers, and workflow
+        guidance.
       </p>
 
-      <Textarea
-        value={ticket}
-        onChange={(event) => setTicket(event.target.value)}
-        className="mt-6 min-h-[140px] max-w-2xl border-white/16 bg-[#0c1b24] text-left text-white placeholder:text-white/35"
-        placeholder="Paste a Jira, Linear, GitHub, Slack, or manual task..."
-      />
+      <div className="mt-6 w-full max-w-2xl">
+        <Textarea
+          value={taskText}
+          onChange={(event) => setTaskText(event.target.value)}
+          className="min-h-[156px] border-white/20 bg-[#07181c] text-left text-base text-white shadow-[0_0_40px_rgba(45,212,191,0.08)] placeholder:text-white/40"
+          placeholder="Build password reset flow with token expiry, email link, backend validation, and frontend reset form..."
+        />
 
-      <div className="mt-4 flex flex-wrap justify-center gap-2">
-        {demoTasks.map((task) => (
+        <div className="-mt-7 flex justify-center">
+          <Button
+            size="lg"
+            className="h-12 min-w-48 bg-emerald-400 text-[#041014] hover:bg-emerald-300"
+            onClick={onAnalyze}
+          >
+            Analyze task <ArrowRight className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      {error && <p className="mt-4 text-sm font-bold text-rose-300">{error}</p>}
+
+      <div className="mt-6 flex flex-wrap items-center justify-center gap-2 text-xs">
+        <span className="font-bold text-white/45">Try example:</span>
+        {demoTasks.slice(0, 4).map((task) => (
           <button
             key={task.id}
-            className="rounded-full border border-white/12 bg-white/5 px-3 py-1.5 text-xs font-bold text-white/70 transition hover:border-emerald-300/40 hover:text-emerald-200"
-            onClick={() => setTicket(task.ticket)}
+            className="rounded-full border border-white/15 bg-white/[0.04] px-3 py-1.5 font-bold text-white/65 transition hover:border-emerald-300/50 hover:text-emerald-200"
+            onClick={() => selectExample(task.ticket)}
           >
             {task.label}
           </button>
         ))}
       </div>
 
-      <div className="mt-5 grid w-full max-w-2xl gap-3 sm:grid-cols-[1fr_auto]">
+      <div className="mt-6 grid w-full max-w-2xl gap-3 sm:grid-cols-[1fr_auto]">
         <Input
           value={githubUrl}
           onChange={(event) => setGithubUrl(event.target.value)}
-          className="border-white/16 bg-[#0c1b24] text-white placeholder:text-white/35"
-          placeholder="Optional live GitHub issue URL"
+          className="border-white/15 bg-[#07181c] text-white placeholder:text-white/35"
+          placeholder="Optional public GitHub issue URL"
         />
-        <Button variant="secondary" onClick={importGithubIssue}>
+        <Button
+          variant="secondary"
+          className="border-white/10 bg-white/[0.06] text-white hover:bg-white/10"
+          onClick={importGithubIssue}
+        >
           <Github className="h-4 w-4" />
-          Import GitHub
+          Import
         </Button>
       </div>
 
@@ -397,14 +842,17 @@ function InputScreen({
         <ImportButton label="Jira" icon={Layers3} onClick={() => importPlaceholder("Jira")} />
         <ImportButton label="Linear" icon={Workflow} onClick={() => importPlaceholder("Linear")} />
         <ImportButton label="Slack" icon={MessageSquare} onClick={() => importPlaceholder("Slack")} />
-        <ImportButton label="GitHub" icon={Github} onClick={importGithubIssue} />
       </div>
 
       {importNote && <p className="mt-3 text-xs text-white/50">{importNote}</p>}
 
-      <Button size="lg" className="mt-6 min-w-52" onClick={onAnalyze}>
-        Analyze task <ArrowRight className="h-4 w-4" />
-      </Button>
+      <div className="mt-8 flex flex-wrap justify-center gap-4 text-[11px] font-bold text-white/40">
+        <span>AI-powered estimation</span>
+        <span>•</span>
+        <span>Smarter planning</span>
+        <span>•</span>
+        <span>Better delivery</span>
+      </div>
     </div>
   );
 }
@@ -415,12 +863,12 @@ function ImportButton({
   onClick
 }: {
   label: string;
-  icon: typeof Github;
+  icon: LucideIcon;
   onClick: () => void;
 }) {
   return (
     <button
-      className="inline-flex items-center gap-2 rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs font-bold text-white/65 transition hover:border-emerald-300/40 hover:text-emerald-200"
+      className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-bold text-white/60 transition hover:border-emerald-300/45 hover:text-emerald-200"
       onClick={onClick}
     >
       <Icon className="h-4 w-4" />
@@ -438,87 +886,69 @@ function ClarifyScreen({
 }: {
   questions: string[];
   answers: Record<string, string>;
-  setAnswers: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  setAnswers: Dispatch<SetStateAction<Record<string, string>>>;
   onBack: () => void;
   onContinue: () => void;
 }) {
-  const visibleQuestions = questions.length
-    ? questions.slice(0, 4)
-    : [
-        "What acceptance criteria would make this task unquestionably done?",
-        "Which systems, people, or APIs can block implementation?"
-      ];
-
   return (
-    <div className="mx-auto max-w-5xl">
-      <div className="text-center">
-        <h2 className="text-3xl font-black tracking-normal">A few quick questions</h2>
-        <p className="mt-2 text-sm text-white/55">
-          Clarify the parts that influence complexity, dependencies, review load, and confidence.
-        </p>
-      </div>
+    <DarkFrame>
+      <div className="mx-auto max-w-5xl">
+        <div className="text-center">
+          <h2 className="text-2xl font-black tracking-normal">A few quick questions</h2>
+          <p className="mt-2 text-xs font-bold text-white/50">
+            Help us understand the task better so we can give you a more accurate estimate.
+          </p>
+        </div>
 
-      <div className="mt-7 grid gap-4 md:grid-cols-2">
-        {visibleQuestions.map((question) => (
-          <ClarifyCard
-            key={question}
-            question={question}
-            value={answers[question] ?? ""}
-            onChange={(value) => setAnswers((current) => ({ ...current, [question]: value }))}
-          />
-        ))}
-      </div>
-
-      <div className="mt-4 grid gap-4 md:grid-cols-2">
-        {optionalFields.map((field) => (
-          <label key={field.key} className="rounded-lg border border-white/8 bg-white/5 p-4">
-            <span className="text-sm font-black text-white/78">{field.label}</span>
-            <Input
-              value={answers[field.key] ?? ""}
-              onChange={(event) =>
-                setAnswers((current) => ({ ...current, [field.key]: event.target.value }))
-              }
-              className="mt-3 border-white/12 bg-[#0c1b24] text-white placeholder:text-white/35"
-              placeholder={field.placeholder}
+        <div className="mt-7 grid gap-4 md:grid-cols-2">
+          {questions.map((question, index) => (
+            <ClarifyCard
+              key={question}
+              question={question}
+              index={index}
+              value={answers[question] ?? ""}
+              onChange={(value) => setAnswers((current) => ({ ...current, [question]: value }))}
             />
-          </label>
-        ))}
-      </div>
+          ))}
+        </div>
 
-      <div className="mt-7 flex items-center justify-between">
-        <Button variant="ghost" className="text-white/70 hover:bg-white/10" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" />
-          Back
-        </Button>
-        <Button onClick={onContinue}>
-          Continue <ArrowRight className="h-4 w-4" />
-        </Button>
+        <div className="mt-7 flex items-center justify-between">
+          <Button variant="ghost" className="text-white/70 hover:bg-white/10" onClick={onBack}>
+            <ArrowLeft className="h-4 w-4" />
+            Back
+          </Button>
+          <Button className="bg-emerald-400 text-[#041014] hover:bg-emerald-300" onClick={onContinue}>
+            Continue <ArrowRight className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
-    </div>
+    </DarkFrame>
   );
 }
 
 function ClarifyCard({
   question,
   value,
-  onChange
+  onChange,
+  index
 }: {
   question: string;
   value: string;
   onChange: (value: string) => void;
+  index: number;
 }) {
-  const options = ["Yes", "Partial", "No"];
+  const options = index === 2 ? ["Yes", "Some", "No"] : ["Yes", "Partial", "No"];
 
   return (
-    <div className="rounded-lg border border-white/8 bg-white/5 p-4">
-      <p className="text-sm font-black text-white/82">{question}</p>
+    <div className="rounded-lg border border-white/10 bg-white/[0.055] p-4">
+      <p className="text-sm font-black text-white/90">{question}</p>
       <div className="mt-4 grid grid-cols-3 gap-2">
         {options.map((option) => (
           <button
             key={option}
             className={cn(
-              "rounded-md border border-white/8 bg-[#0c1b24] py-2 text-sm font-bold text-white/62 transition",
-              value === option && "border-emerald-300/45 bg-emerald-300/15 text-emerald-200"
+              "rounded-md border border-white/10 bg-[#0a1c21] px-2 py-2 text-xs font-black text-white/60 transition hover:border-emerald-300/40",
+              value === option && "border-emerald-300/55 bg-emerald-300/15 text-emerald-200"
             )}
             onClick={() => onChange(option)}
           >
@@ -529,159 +959,209 @@ function ClarifyCard({
       <Input
         value={value && !options.includes(value) ? value : ""}
         onChange={(event) => onChange(event.target.value)}
-        className="mt-3 border-white/12 bg-[#0c1b24] text-white placeholder:text-white/35"
-        placeholder="Optional details"
+        className="mt-3 border-white/10 bg-[#07181c] text-white placeholder:text-white/35"
+        placeholder="Optional detail"
       />
     </div>
   );
 }
 
-function AnalyzeScreen({ loadingStage }: { loadingStage: number }) {
+function AnalyzeScreen({
+  loadingStage,
+  stageDetail,
+  error,
+  isAnalyzing,
+  result,
+  onBack,
+  onContinue,
+  onRetry
+}: {
+  loadingStage: number;
+  stageDetail: string;
+  error: string;
+  isAnalyzing: boolean;
+  result: AnalysisResult | null;
+  onBack: () => void;
+  onContinue: () => void;
+  onRetry: () => void;
+}) {
+  const completed = Boolean(result) && !isAnalyzing;
+
   return (
-    <div className="mx-auto grid max-w-5xl items-center gap-10 py-10 lg:grid-cols-[1fr_320px]">
-      <div>
-        <h2 className="text-3xl font-black tracking-normal">Analyzing your task...</h2>
-        <p className="mt-2 text-sm text-white/55">
-          Each stage advances while the app calls the backend and calculates deterministic ranges.
-        </p>
+    <DarkFrame>
+      <div className="mx-auto grid max-w-5xl items-center gap-10 py-4 lg:grid-cols-[1fr_330px]">
+        <div>
+          <h2 className="text-2xl font-black tracking-normal">
+            {completed ? "Analysis complete" : "Analyzing your task..."}
+          </h2>
+          <p className="mt-3 max-w-xl text-sm leading-6 text-white/55">
+            The stages use the parsed profile, deterministic scoring rules, and the optional
+            AI-enhanced explanation path.
+          </p>
 
-        <div className="mt-8 space-y-5">
-          {analyzeStages.map((stage, index) => {
-            const done = index <= loadingStage;
-            const active = index === loadingStage;
+          <div className="mt-8 space-y-5">
+            {analyzeStages.map((stage, index) => {
+              const done = completed || index < loadingStage;
+              const active = !completed && index === loadingStage;
 
-            return (
-              <div key={stage} className="flex items-center gap-4">
-                <span
-                  className={cn(
-                    "flex h-8 w-8 items-center justify-center rounded-full border border-white/18 text-white/40",
-                    done && "border-emerald-300 bg-emerald-300/20 text-emerald-200"
-                  )}
-                >
-                  {done ? <Check className="h-4 w-4" /> : index + 1}
-                </span>
-                <span className={cn("text-sm font-bold", done ? "text-white" : "text-white/42")}>
-                  {stage}
-                </span>
-                {active && <Loader2 className="h-4 w-4 animate-spin text-emerald-300" />}
-              </div>
-            );
-          })}
+              return (
+                <div key={stage} className="flex items-center gap-4">
+                  <span
+                    className={cn(
+                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/20 text-xs font-black text-white/35",
+                      done && "border-emerald-300 bg-emerald-300/20 text-emerald-200",
+                      active && "border-emerald-300 text-emerald-200"
+                    )}
+                  >
+                    {done ? <Check className="h-4 w-4" /> : active ? <Loader2 className="h-4 w-4 animate-spin" /> : index + 1}
+                  </span>
+                  <span className={cn("text-sm font-black", done || active ? "text-white/90" : "text-white/40")}>
+                    {stage}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          {stageDetail && <p className="mt-6 text-sm font-bold text-emerald-200/80">{stageDetail}</p>}
+          {error && <p className="mt-5 text-sm font-bold text-rose-300">{error}</p>}
+
+          <div className="mt-8 flex items-center justify-between gap-3">
+            <Button variant="ghost" className="text-white/70 hover:bg-white/10" onClick={onBack}>
+              <ArrowLeft className="h-4 w-4" />
+              Back
+            </Button>
+            {error ? (
+              <Button className="bg-emerald-400 text-[#041014] hover:bg-emerald-300" onClick={onRetry}>
+                <RefreshCcw className="h-4 w-4" />
+                Retry
+              </Button>
+            ) : completed ? (
+              <Button className="bg-emerald-400 text-[#041014] hover:bg-emerald-300" onClick={onContinue}>
+                Continue <ArrowRight className="h-4 w-4" />
+              </Button>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="relative flex min-h-[260px] items-center justify-center overflow-hidden rounded-lg border border-cyan-300/10 bg-[#061a20]">
+          <div className="absolute inset-0 bg-[linear-gradient(rgba(34,211,238,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,0.08)_1px,transparent_1px)] bg-[size:44px_44px]" />
+          <Brain className="relative h-40 w-40 text-cyan-300 drop-shadow-[0_0_32px_rgba(34,211,238,0.38)]" />
         </div>
       </div>
-
-      <div className="flex min-h-[260px] items-center justify-center rounded-lg border border-cyan-300/10 bg-cyan-300/5">
-        <Brain className="h-40 w-40 text-cyan-300 drop-shadow-[0_0_35px_rgba(34,211,238,0.35)]" />
-      </div>
-    </div>
+    </DarkFrame>
   );
 }
 
 function ResultsScreen({
   result,
-  chartData,
-  onSave,
-  saved,
+  onBack,
   onPlan,
-  onBack
+  onOptimize,
+  onSave,
+  saved
 }: {
   result: AnalysisResult;
-  chartData: { name: string; value: number }[];
+  onBack: () => void;
+  onPlan: () => void;
+  onOptimize: () => void;
   onSave: () => void;
   saved: boolean;
-  onPlan: () => void;
-  onBack: () => void;
 }) {
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <div className="flex flex-wrap gap-2">
-            <Badge tone="teal">{result.profile.task_type}</Badge>
-            <Badge tone="green">{result.estimation.confidence_score}% confidence</Badge>
-            <Badge tone={result.estimation.delay_risk > 55 ? "rose" : "amber"}>
-              {result.estimation.delay_risk}% delay risk
-            </Badge>
-          </div>
-          <h2 className="mt-3 text-3xl font-black tracking-normal">{result.title}</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-white/58">{result.managerSummary}</p>
-        </div>
-        <Button variant="secondary" onClick={onSave}>
-          <Save className="h-4 w-4" />
-          {saved ? "Saved" : "Save"}
-        </Button>
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-4">
-        <Metric label="Without AI" value={formatHours(result.estimation.without_ai_min_hours, result.estimation.without_ai_max_hours)} />
-        <Metric label="With AI" value={formatHours(result.estimation.with_ai_min_hours, result.estimation.with_ai_max_hours)} />
-        <Metric label="Time saved" value={`${result.estimation.time_saved_percent}%`} green />
-        <Metric label="Confidence" value={`${result.estimation.confidence_score}%`} />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
-        <Panel title="Estimate comparison">
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.08)" />
-                <XAxis dataKey="name" tick={{ fill: "rgba(255,255,255,0.62)", fontSize: 12 }} tickLine={false} axisLine={false} />
-                <YAxis tick={{ fill: "rgba(255,255,255,0.45)", fontSize: 12 }} tickLine={false} axisLine={false} />
-                <Tooltip />
-                <Bar dataKey="value" radius={[8, 8, 0, 0]}>
-                  {chartData.map((entry) => (
-                    <Cell key={entry.name} fill={entry.name === "With AI" ? "#34d399" : "#64748b"} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </Panel>
-
-        <Panel title="AI leverage">
-          <div className="rounded-lg bg-white/5 p-4">
-            <div className="flex justify-between text-xs font-bold text-white/60">
-              <span>{result.profile.ai_leverage} leverage</span>
-              <span>{result.estimation.time_saved_percent}% saved</span>
+    <DarkFrame>
+      <div className="space-y-5">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <div className="flex flex-wrap gap-2">
+              <Badge className="border-white/10 bg-white/[0.06] text-white/70">Manual input</Badge>
+              <Badge className="border-emerald-300/25 bg-emerald-300/10 text-emerald-200">
+                {result.estimation.confidence_score}% confidence
+              </Badge>
+              <Badge className="border-white/10 bg-white/[0.06] text-white/70">
+                {result.profile.task_type}
+              </Badge>
             </div>
-            <div className="mt-3 h-2 rounded-full bg-white/12">
+            <h2 className="mt-3 text-3xl font-black tracking-normal">{result.title}</h2>
+          </div>
+
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              className="border-white/10 bg-white/[0.06] text-white hover:bg-white/10"
+              onClick={onSave}
+            >
+              <Save className="h-4 w-4" />
+              {saved ? "Saved" : "Save"}
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-4">
+          <Metric
+            label="Without AI"
+            value={formatHours(
+              result.estimation.without_ai_min_hours,
+              result.estimation.without_ai_max_hours
+            )}
+          />
+          <Metric
+            label="With AI"
+            value={formatHours(
+              result.estimation.with_ai_min_hours,
+              result.estimation.with_ai_max_hours
+            )}
+          />
+          <Metric label="Time saved" value={`${result.estimation.time_saved_percent}%`} green />
+          <Metric label="Confidence" value={`${result.estimation.confidence_score}%`} />
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ListPanel title="Why this estimate" items={result.explanation} icon={FileText} />
+          <ListPanel title="Top blockers" items={result.blockers} icon={ShieldAlert} danger />
+          <ListPanel title="Top accelerators" items={result.accelerators} icon={Zap} />
+          <Panel title="AI leverage">
+            <div className="flex items-center justify-between text-xs font-black text-white/60">
+              <span>{result.profile.ai_leverage} leverage</span>
+              <span>{result.estimation.time_saved_percent}%</span>
+            </div>
+            <div className="mt-3 h-2 rounded-full bg-white/10">
               <div
                 className="h-2 rounded-full bg-emerald-300"
-                style={{ width: `${result.profile.ai_leverage === "high" ? 82 : result.profile.ai_leverage === "medium" ? 58 : 34}%` }}
+                style={{
+                  width:
+                    result.profile.ai_leverage === "high"
+                      ? "78%"
+                      : result.profile.ai_leverage === "medium"
+                        ? "58%"
+                        : "35%"
+                }}
               />
             </div>
-            <p className="mt-4 text-sm leading-6 text-white/58">{result.developerSummary}</p>
+            <p className="mt-4 text-sm leading-6 text-white/60">{result.developerSummary}</p>
+          </Panel>
+        </div>
+
+        <div className="flex items-center justify-between gap-3">
+          <Button variant="ghost" className="text-white/70 hover:bg-white/10" onClick={onBack}>
+            <ArrowLeft className="h-4 w-4" />
+            Back
+          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              className="border-white/10 bg-white/[0.06] text-white hover:bg-white/10"
+              onClick={onOptimize}
+            >
+              Optimize
+            </Button>
+            <Button className="bg-emerald-400 text-[#041014] hover:bg-emerald-300" onClick={onPlan}>
+              Plan <ArrowRight className="h-4 w-4" />
+            </Button>
           </div>
-        </Panel>
+        </div>
       </div>
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        <ListPanel title="Why this estimate" items={result.explanation} icon={ClipboardList} />
-        <ListPanel title="Top blockers" items={result.blockers} icon={ShieldAlert} danger />
-        <ListPanel title="Top accelerators" items={result.accelerators} icon={Zap} />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        <ListPanel title="Optimization summary" items={result.afterOptimization} icon={Workflow} />
-        <ListPanel title="Data sources used" items={result.sources.map((source) => `${source.name}: ${source.fields.join(", ")}`)} icon={Database} />
-        <ListPanel title="What we considered" items={[
-          `Complexity: ${result.profile.complexity}`,
-          `Dependencies: ${result.profile.dependencies}`,
-          `Review load: ${result.profile.review_load}`,
-          `Blocker probability: ${result.profile.blocker_probability}`
-        ]} icon={CheckCircle2} />
-      </div>
-
-      <div className="flex justify-between">
-        <Button variant="ghost" className="text-white/70 hover:bg-white/10" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" />
-          Back
-        </Button>
-        <Button onClick={onPlan}>
-          Review plan <ArrowRight className="h-4 w-4" />
-        </Button>
-      </div>
-    </div>
+    </DarkFrame>
   );
 }
 
@@ -695,184 +1175,392 @@ function PlanScreen({
   onOptimize: () => void;
 }) {
   return (
-    <div className="space-y-5">
-      <div>
-        <h2 className="text-3xl font-black tracking-normal">Subtasks and execution plan</h2>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-white/58">
-          The plan is generated from the parsed task structure, clarification answers, risk profile,
-          and deterministic estimate.
-        </p>
-      </div>
+    <DarkFrame>
+      <div className="space-y-5">
+        <h2 className="text-2xl font-black tracking-normal">Subtasks & execution plan</h2>
 
-      <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
-        <Panel title="Subtasks">
-          <div className="space-y-2">
-            {result.subtasks.map((subtask, index) => (
-              <div key={subtask.title} className="grid gap-3 rounded-lg bg-white/5 p-3 text-sm md:grid-cols-[28px_1fr_70px_90px_120px] md:items-center">
-                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-300/15 text-xs font-black text-emerald-200">
-                  {index + 1}
-                </span>
-                <div>
-                  <p className="font-bold text-white/88">{subtask.title}</p>
-                  <p className="mt-1 text-xs text-white/44">{subtask.owner}</p>
-                </div>
-                <span className="text-white/60">{subtask.estimateHours}</span>
-                <span className="text-emerald-200">{subtask.aiHelpfulness}% AI help</span>
-                <span className={cn("text-xs font-bold", subtask.criticalPath ? "text-amber-300" : "text-white/48")}>
-                  {subtask.criticalPath ? "Critical path" : "Support work"}
-                </span>
-              </div>
-            ))}
-          </div>
-        </Panel>
-
-        <div className="space-y-4">
-          <Panel title="Execution order">
-            <div className="space-y-3">
-              {result.workflow.map((item, index) => (
-                <div key={item} className="flex gap-3 text-sm leading-6">
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-300/18 text-xs font-black text-emerald-200">
-                    {index + 1}
-                  </span>
-                  <span className="text-white/64">{item}</span>
+        <div className="grid gap-4 lg:grid-cols-[1.25fr_1fr]">
+          <Panel title="Subtasks">
+            <div className="space-y-4">
+              {result.plan.subtasks.map((subtask, index) => (
+                <div
+                  key={subtask.title}
+                  className="grid gap-3 text-sm sm:grid-cols-[28px_1fr_56px_72px_84px] sm:items-center"
+                >
+                  <span className="font-black text-white/70">{index + 1}.</span>
+                  <div>
+                    <p className="font-black text-white/90">{subtask.title}</p>
+                    <p className="mt-1 text-xs text-white/40">{subtask.owner}</p>
+                  </div>
+                  <span className="font-bold text-white/60">{subtask.sharePercent}%</span>
+                  <Tag tone={subtask.aiHelpfulnessTag}>{subtask.aiHelpfulnessTag}</Tag>
+                  <Tag tone={subtask.priority}>{subtask.priority}</Tag>
                 </div>
               ))}
             </div>
           </Panel>
 
-          <Panel title="Parallelizable work">
-            <div className="flex flex-wrap gap-2">
-              {result.subtasks
-                .filter((subtask) => subtask.parallelizable)
-                .map((subtask) => (
-                  <span key={subtask.title} className="rounded-md bg-emerald-300/12 px-2.5 py-1.5 text-xs font-bold text-emerald-200">
-                    {subtask.title}
+          <Panel title="Execution order">
+            <div className="space-y-4">
+              {result.plan.execution_order.map((item, index) => (
+                <div key={item} className="flex gap-3 text-sm leading-6">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-300/20 text-xs font-black text-emerald-200">
+                    {index + 1}
                   </span>
-                ))}
+                  <span className="text-white/60">{item}</span>
+                </div>
+              ))}
             </div>
           </Panel>
         </div>
-      </div>
 
-      <Panel title="Timeline">
-        <div className="grid gap-3 md:grid-cols-5">
-          {["Scope", "Dependencies", "Build", "Review", "Release"].map((item, index) => (
-            <div key={item} className="rounded-lg bg-white/5 p-4 text-center">
-              <span className="mx-auto flex h-8 w-8 items-center justify-center rounded-full bg-emerald-300/18 text-sm font-black text-emerald-200">
-                {index + 1}
+        <Panel title="Parallelizable">
+          <div className="flex flex-wrap gap-2">
+            {result.plan.parallelizable_groups.flat().map((item, index) => (
+              <span
+                key={`${item}-${index}`}
+                className="rounded-md border border-emerald-300/15 bg-emerald-300/10 px-3 py-2 text-xs font-black text-emerald-200"
+              >
+                {index + 1} {item}
               </span>
-              <p className="mt-3 text-sm font-bold">{item}</p>
-            </div>
-          ))}
-        </div>
-      </Panel>
+            ))}
+          </div>
+        </Panel>
 
-      <div className="flex justify-between">
-        <Button variant="ghost" className="text-white/70 hover:bg-white/10" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" />
-          Back
-        </Button>
-        <Button onClick={onOptimize}>
-          Optimize workflow <ArrowRight className="h-4 w-4" />
-        </Button>
+        <div className="flex items-center justify-between gap-3">
+          <Button variant="ghost" className="text-white/70 hover:bg-white/10" onClick={onBack}>
+            <ArrowLeft className="h-4 w-4" />
+            Back
+          </Button>
+          <Button className="bg-emerald-400 text-[#041014] hover:bg-emerald-300" onClick={onOptimize}>
+            Optimize <ArrowRight className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
-    </div>
+    </DarkFrame>
   );
 }
 
-function OptimizeScreen({ result, onBack }: { result: AnalysisResult; onBack: () => void }) {
-  return (
-    <div className="space-y-5">
-      <div>
-        <h2 className="text-3xl font-black tracking-normal">Workflow optimization</h2>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-white/58">
-          EstiMate AI compares the current delivery path with an optimized AI-assisted plan.
-        </p>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
-        <Panel title="Current plan vs optimized plan">
-          <div className="grid gap-4 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
-            <Metric label="Current plan" value={formatHours(result.estimation.without_ai_min_hours, result.estimation.without_ai_max_hours)} />
-            <ArrowRight className="mx-auto h-5 w-5 text-emerald-200" />
-            <Metric label="Optimized plan" value={formatHours(result.estimation.with_ai_min_hours, result.estimation.with_ai_max_hours)} green />
-          </div>
-        </Panel>
-        <Panel title="Reduced time estimate">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Metric label="Saved" value={`${result.estimation.time_saved_percent}%`} green />
-            <Metric label="Delay risk" value={`${result.estimation.delay_risk}%`} />
-            <Metric label="Confidence" value={`${result.estimation.confidence_score}%`} />
-          </div>
-        </Panel>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        <ListPanel title="Key improvements" items={result.afterOptimization} icon={CheckCircle2} />
-        <ListPanel
-          title="Suggestions"
-          items={[
-            "Parallelize dependency mapping, test planning, and documentation.",
-            "Use AI for boilerplate, edge-case generation, docs, and manager summaries.",
-            "Reserve senior review for critical-path, security, performance, and release risks.",
-            "Delegate support tasks once acceptance criteria are locked."
-          ]}
-          icon={Split}
-        />
-        <ListPanel title="Blockers to resolve first" items={result.blockers} icon={ShieldAlert} danger />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <ListPanel title="Before optimization" items={result.beforeOptimization} icon={GitPullRequest} />
-        <ListPanel title="After optimization" items={result.afterOptimization} icon={Workflow} />
-      </div>
-
-      <Panel title="Data sources used">
-        <div className="grid gap-3 md:grid-cols-3">
-          {result.sources.slice(0, 6).map((source) => (
-            <div key={source.name} className="rounded-lg bg-white/5 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-black">{source.name}</span>
-                <span className="rounded-md bg-white/8 px-2 py-1 text-[11px] font-bold text-white/52">
-                  {source.status}
-                </span>
-              </div>
-              <p className="mt-2 text-xs leading-5 text-white/48">{source.note}</p>
-            </div>
-          ))}
-        </div>
-      </Panel>
-
-      <Button variant="ghost" className="text-white/70 hover:bg-white/10" onClick={onBack}>
-        <ArrowLeft className="h-4 w-4" />
-        Back
-      </Button>
-    </div>
-  );
-}
-
-function Panel({
-  title,
-  children
+function OptimizeScreen({
+  result,
+  onBack,
+  onResults
 }: {
-  title: string;
-  children: React.ReactNode;
+  result: AnalysisResult;
+  onBack: () => void;
+  onResults: () => void;
 }) {
   return (
-    <div className="rounded-lg border border-white/8 bg-white/5 p-4">
-      <h3 className="mb-4 text-sm font-black text-white/80">{title}</h3>
+    <DarkFrame>
+      <div className="space-y-5">
+        <h2 className="text-2xl font-black tracking-normal">Workflow optimization</h2>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Panel title="Optimization insights">
+            <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
+              <Metric
+                label="Current plan"
+                value={formatHours(
+                  result.optimization.current_plan_estimate.min_hours,
+                  result.optimization.current_plan_estimate.max_hours
+                )}
+              />
+              <ArrowRight className="mx-auto h-5 w-5 text-emerald-200" />
+              <Metric
+                label="Optimized plan"
+                value={formatHours(
+                  result.optimization.optimized_plan_estimate.min_hours,
+                  result.optimization.optimized_plan_estimate.max_hours
+                )}
+                green
+              />
+            </div>
+          </Panel>
+
+          <ListPanel
+            title="Key improvements"
+            items={result.optimization.key_improvements}
+            icon={CheckCircle2}
+          />
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Panel title="Data sources used">
+            <div className="grid gap-4 sm:grid-cols-2">
+              {result.optimization.data_sources_used.slice(0, 4).map((source) => (
+                <div key={source.name} className="flex gap-3">
+                  <Database className="mt-1 h-4 w-4 shrink-0 text-cyan-300" />
+                  <div>
+                    <p className="text-sm font-black text-white/80">{source.name}</p>
+                    <p className="mt-1 text-xs leading-5 text-white/50">{source.fields.join(", ")}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Panel>
+
+          <ListPanel
+            title="What we considered"
+            items={result.optimization.considered}
+            icon={Check}
+          />
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ListPanel title="Current plan" items={result.beforeOptimization} icon={Split} />
+          <ListPanel title="Optimized plan" items={result.afterOptimization} icon={Workflow} />
+        </div>
+
+        <div className="flex items-center justify-between gap-3">
+          <Button variant="ghost" className="text-white/70 hover:bg-white/10" onClick={onBack}>
+            <ArrowLeft className="h-4 w-4" />
+            Back
+          </Button>
+          <Button
+            variant="secondary"
+            className="border-white/10 bg-white/[0.06] text-white hover:bg-white/10"
+            onClick={onResults}
+          >
+            Results
+          </Button>
+        </div>
+      </div>
+    </DarkFrame>
+  );
+}
+
+function HistoryScreen({
+  history,
+  historySeries,
+  taskTypeDistribution,
+  confidenceDistribution,
+  onOpenRecord,
+  onBack
+}: {
+  history: AnalysisResult[];
+  historySeries: ReturnType<typeof buildHistorySeries>;
+  taskTypeDistribution: { name: string; value: number }[];
+  confidenceDistribution: { name: string; value: number }[];
+  onOpenRecord: (record: AnalysisResult, step?: PageStep) => void;
+  onBack: () => void;
+}) {
+  const averages = useMemo(() => {
+    if (history.length === 0) {
+      return { without: 0, withAi: 0, saved: 0, confidence: 0 };
+    }
+
+    return history.reduce(
+      (acc, record, index) => {
+        const next = {
+          without:
+            acc.without +
+            averageRange(
+              record.estimation.without_ai_min_hours,
+              record.estimation.without_ai_max_hours
+            ),
+          withAi:
+            acc.withAi +
+            averageRange(record.estimation.with_ai_min_hours, record.estimation.with_ai_max_hours),
+          saved: acc.saved + record.estimation.time_saved_percent,
+          confidence: acc.confidence + record.estimation.confidence_score
+        };
+
+        if (index === history.length - 1) {
+          return {
+            without: Math.round(next.without / history.length),
+            withAi: Math.round(next.withAi / history.length),
+            saved: Math.round(next.saved / history.length),
+            confidence: Math.round(next.confidence / history.length)
+          };
+        }
+
+        return next;
+      },
+      { without: 0, withAi: 0, saved: 0, confidence: 0 }
+    );
+  }, [history]);
+
+  return (
+    <DarkFrame>
+      <div className="space-y-5">
+        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div>
+            <Badge className="border-emerald-300/20 bg-emerald-300/10 text-emerald-200">
+              History Analytics
+            </Badge>
+            <h1 className="mt-3 text-3xl font-black tracking-normal">Analyzed tasks</h1>
+            <p className="mt-2 text-sm text-white/50">
+              Saved analyses persist across refreshes and power the dashboard.
+            </p>
+          </div>
+          <Button variant="ghost" className="text-white/70 hover:bg-white/10" onClick={onBack}>
+            <ArrowLeft className="h-4 w-4" />
+            Back
+          </Button>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-4">
+          <Metric label="Tasks analyzed" value={`${history.length}`} />
+          <Metric label="Avg without AI" value={`${averages.without}h`} />
+          <Metric label="Avg with AI" value={`${averages.withAi}h`} green />
+          <Metric label="Avg saved" value={`${averages.saved}%`} green />
+        </div>
+
+        <div className="grid gap-4 xl:grid-cols-[0.95fr_1.35fr]">
+          <Panel title="History">
+            {history.length === 0 ? (
+              <EmptyState />
+            ) : (
+              <div className="max-h-[560px] space-y-2 overflow-auto pr-1">
+                {history.map((record) => (
+                  <button
+                    key={record.id}
+                    className="w-full rounded-lg border border-white/10 bg-white/[0.045] p-3 text-left transition hover:border-emerald-300/35 hover:bg-white/[0.07]"
+                    onClick={() => onOpenRecord(record, "results")}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="line-clamp-2 text-sm font-black text-white/85">{record.title}</p>
+                        <p className="mt-1 text-xs text-white/40">{shortDate(record.created_at)}</p>
+                      </div>
+                      <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-white/35" />
+                    </div>
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                      <HistoryMiniMetric
+                        label="No AI"
+                        value={formatHours(
+                          record.estimation.without_ai_min_hours,
+                          record.estimation.without_ai_max_hours
+                        )}
+                      />
+                      <HistoryMiniMetric
+                        label="AI"
+                        value={formatHours(
+                          record.estimation.with_ai_min_hours,
+                          record.estimation.with_ai_max_hours
+                        )}
+                      />
+                      <HistoryMiniMetric
+                        label="Conf"
+                        value={`${record.estimation.confidence_score}%`}
+                      />
+                    </div>
+                    <div className="mt-3 flex gap-2">
+                      <SmallLinkButton onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenRecord(record, "plan");
+                      }}>
+                        Plan
+                      </SmallLinkButton>
+                      <SmallLinkButton onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenRecord(record, "optimize");
+                      }}>
+                        Optimize
+                      </SmallLinkButton>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </Panel>
+
+          <div className="space-y-4">
+            <Panel title="Tasks analyzed over time">
+              <ChartWrap>
+                <LineChart data={historySeries}>
+                  <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
+                  <XAxis dataKey="day" tick={chartTick} tickLine={false} axisLine={false} />
+                  <YAxis tick={chartTick} tickLine={false} axisLine={false} allowDecimals={false} />
+                  <Tooltip contentStyle={tooltipStyle} />
+                  <Line type="monotone" dataKey="tasks" stroke="#35d399" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ChartWrap>
+            </Panel>
+
+            <Panel title="Average estimate over time">
+              <ChartWrap>
+                <LineChart data={historySeries}>
+                  <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
+                  <XAxis dataKey="day" tick={chartTick} tickLine={false} axisLine={false} />
+                  <YAxis tick={chartTick} tickLine={false} axisLine={false} />
+                  <Tooltip contentStyle={tooltipStyle} />
+                  <Line type="monotone" dataKey="avgWithout" name="Without AI" stroke="#94a3b8" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="avgWith" name="With AI" stroke="#35d399" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="avgSaved" name="Saved %" stroke="#22d3ee" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ChartWrap>
+            </Panel>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Panel title="Task type distribution">
+                <ChartWrap small>
+                  <PieChart>
+                    <Pie data={taskTypeDistribution} dataKey="value" nameKey="name" innerRadius={42} outerRadius={76} paddingAngle={4}>
+                      {taskTypeDistribution.map((entry, index) => (
+                        <Cell key={entry.name} fill={chartColors[index % chartColors.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={tooltipStyle} />
+                  </PieChart>
+                </ChartWrap>
+              </Panel>
+
+              <Panel title="Confidence distribution">
+                <ChartWrap small>
+                  <BarChart data={confidenceDistribution}>
+                    <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
+                    <XAxis dataKey="name" tick={chartTick} tickLine={false} axisLine={false} />
+                    <YAxis tick={chartTick} tickLine={false} axisLine={false} allowDecimals={false} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Bar dataKey="value" radius={[6, 6, 0, 0]} fill="#35d399" />
+                  </BarChart>
+                </ChartWrap>
+              </Panel>
+            </div>
+          </div>
+        </div>
+      </div>
+    </DarkFrame>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="rounded-lg border border-dashed border-white/15 p-8 text-center">
+      <Clock3 className="mx-auto h-8 w-8 text-white/35" />
+      <p className="mt-3 text-sm font-black text-white/70">No analyzed tasks yet</p>
+      <p className="mt-2 text-xs leading-5 text-white/45">
+        Run an analysis and it will appear here with estimates, confidence, and charts.
+      </p>
+    </div>
+  );
+}
+
+function DarkFrame({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-[#07161b] p-4 shadow-[0_24px_80px_rgba(0,0,0,0.26)] sm:p-6">
       {children}
     </div>
   );
 }
 
+function Panel({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="rounded-lg border border-white/10 bg-white/[0.045] p-4">
+      <h3 className="mb-4 text-sm font-black text-white/80">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
 function Metric({ label, value, green }: { label: string; value: string; green?: boolean }) {
   return (
-    <div className="rounded-lg border border-white/8 bg-white/6 p-4">
-      <div className="text-xs font-bold text-white/50">{label}</div>
-      <div className={cn("mt-2 text-2xl font-black tracking-normal", green ? "text-emerald-300" : "text-white")}>
+    <div className="rounded-lg border border-white/10 bg-[#0a1c21] p-4">
+      <p className="text-xs font-black text-white/50">{label}</p>
+      <p className={cn("mt-2 text-2xl font-black tracking-normal", green ? "text-emerald-300" : "text-white")}>
         {value}
-      </div>
+      </p>
     </div>
   );
 }
@@ -885,14 +1573,14 @@ function ListPanel({
 }: {
   title: string;
   items: string[];
-  icon: typeof ClipboardList;
+  icon: LucideIcon;
   danger?: boolean;
 }) {
   return (
     <Panel title={title}>
       <div className="space-y-3">
         {items.slice(0, 5).map((item) => (
-          <div key={item} className="flex gap-3 text-sm leading-6 text-white/62">
+          <div key={item} className="flex gap-3 text-sm leading-6 text-white/65">
             <Icon className={cn("mt-1 h-4 w-4 shrink-0", danger ? "text-rose-300" : "text-emerald-300")} />
             <span>{item}</span>
           </div>
@@ -902,31 +1590,65 @@ function ListPanel({
   );
 }
 
-function FlowBar() {
-  const items = [
-    ["Input Task", FileText],
-    ["Answer Questions", ClipboardList],
-    ["AI Analysis", Brain],
-    ["Get Estimate", BarChart3],
-    ["Actionable Plan", Workflow]
-  ];
+function Tag({ tone, children }: { tone: "Low" | "Medium" | "High"; children: ReactNode }) {
+  const classes = {
+    Low: "border-white/10 bg-white/[0.05] text-white/50",
+    Medium: "border-amber-300/20 bg-amber-300/10 text-amber-200",
+    High: "border-emerald-300/20 bg-emerald-300/10 text-emerald-200"
+  };
 
   return (
-    <div className="mx-auto mt-8 max-w-5xl rounded-lg border border-slate-200 bg-white p-5 shadow-soft">
-      <div className="grid gap-4 sm:grid-cols-[140px_1fr] sm:items-center">
-        <h2 className="text-2xl font-black tracking-normal">Product Flow</h2>
-        <div className="grid gap-4 sm:grid-cols-5">
-          {items.map(([label, Icon]) => {
-            const TypedIcon = Icon as typeof FileText;
-            return (
-              <div key={label as string} className="flex items-center gap-3 sm:flex-col sm:text-center">
-                <TypedIcon className="h-7 w-7" />
-                <span className="text-sm font-bold">{label as string}</span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+    <span className={cn("w-fit rounded-md border px-2 py-1 text-[11px] font-black", classes[tone])}>
+      {children}
+    </span>
+  );
+}
+
+function HistoryMiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-[#0a1c21] px-2 py-2">
+      <p className="font-black text-white/35">{label}</p>
+      <p className="mt-1 font-black text-white/80">{value}</p>
     </div>
   );
 }
+
+function SmallLinkButton({
+  children,
+  onClick
+}: {
+  children: ReactNode;
+  onClick: MouseEventHandler<HTMLButtonElement>;
+}) {
+  return (
+    <button
+      className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-black text-white/60 transition hover:border-emerald-300/40 hover:text-emerald-200"
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ChartWrap({ children, small }: { children: ReactElement; small?: boolean }) {
+  return (
+    <div className={cn("w-full", small ? "h-[220px]" : "h-[250px]")}>
+      <ResponsiveContainer width="100%" height="100%">
+        {children}
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+const chartTick = {
+  fill: "rgba(255,255,255,0.55)",
+  fontSize: 11,
+  fontWeight: 700
+};
+
+const tooltipStyle = {
+  background: "#07161b",
+  border: "1px solid rgba(255,255,255,0.12)",
+  borderRadius: 8,
+  color: "#fff"
+};

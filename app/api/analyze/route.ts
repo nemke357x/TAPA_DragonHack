@@ -6,6 +6,8 @@ export async function POST(request: Request) {
   const body = (await request.json()) as {
     ticket?: string;
     answers?: Record<string, string>;
+    taskId?: string;
+    createdAt?: string;
   };
 
   const ticket = body.ticket?.trim();
@@ -13,7 +15,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Ticket text is required." }, { status: 400 });
   }
 
-  const fallback = buildAnalysis(ticket, body.answers ?? {});
+  const fallback = buildAnalysis(ticket, body.answers ?? {}, {
+    id: body.taskId,
+    created_at: body.createdAt
+  });
 
   if (!process.env.OPENAI_API_KEY) {
     return NextResponse.json({ result: fallback, mode: "demo" });
@@ -44,6 +49,7 @@ export async function POST(request: Request) {
 
     const content = completion.choices[0]?.message.content;
     const ai = content ? JSON.parse(content) : {};
+    const nextWorkflow = Array.isArray(ai.workflow) ? ai.workflow.slice(0, 6) : fallback.workflow;
     const result = {
       ...fallback,
       summary: ai.summary ?? fallback.summary,
@@ -51,7 +57,11 @@ export async function POST(request: Request) {
       developerSummary: ai.developerSummary ?? fallback.developerSummary,
       blockers: Array.isArray(ai.blockers) ? ai.blockers.slice(0, 4) : fallback.blockers,
       accelerators: Array.isArray(ai.accelerators) ? ai.accelerators.slice(0, 4) : fallback.accelerators,
-      workflow: Array.isArray(ai.workflow) ? ai.workflow.slice(0, 6) : fallback.workflow,
+      workflow: nextWorkflow,
+      plan: {
+        ...fallback.plan,
+        execution_order: nextWorkflow
+      },
       sources: fallback.sources.map((source) =>
         source.name === "OpenAI"
           ? { ...source, status: "connected" as const, note: "Live OpenAI analysis enhanced this result." }

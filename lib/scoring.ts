@@ -1,4 +1,15 @@
-import { AnalysisResult, Estimation, Level, Subtask, TaskProfile, TaskType } from "@/lib/types";
+import {
+  AnalysisResult,
+  Estimation,
+  ExecutionPlan,
+  Level,
+  OptimizationResult,
+  Priority,
+  Source,
+  Subtask,
+  TaskProfile,
+  TaskType
+} from "@/lib/types";
 import { clamp } from "@/lib/utils";
 
 const taskTypes: TaskType[] = [
@@ -40,6 +51,43 @@ const aiSavings: Record<Level, number> = {
 };
 
 const words = (text: string) => text.toLowerCase();
+
+type SubtaskSeed = Omit<Subtask, "sharePercent" | "priority" | "aiHelpfulnessTag"> & {
+  effortWeight?: number;
+};
+
+function helpfulnessTag(value: number): Priority {
+  if (value >= 70) return "High";
+  if (value >= 45) return "Medium";
+  return "Low";
+}
+
+function priorityForSubtask(subtask: SubtaskSeed): Priority {
+  if (subtask.criticalPath) return "High";
+  if (subtask.parallelizable) return "Medium";
+  return "Low";
+}
+
+function withSubtaskMetadata(subtasks: SubtaskSeed[]): Subtask[] {
+  const total = subtasks.reduce((sum, subtask) => sum + (subtask.effortWeight ?? 1), 0);
+  let used = 0;
+
+  return subtasks.map((subtask, index) => {
+    const isLast = index === subtasks.length - 1;
+    const computed = Math.round(((subtask.effortWeight ?? 1) / total) * 100);
+    const sharePercent = isLast ? Math.max(5, 100 - used) : Math.max(5, computed);
+    used += sharePercent;
+
+    const { effortWeight, ...rest } = subtask;
+
+    return {
+      ...rest,
+      sharePercent,
+      priority: priorityForSubtask(subtask),
+      aiHelpfulnessTag: helpfulnessTag(subtask.aiHelpfulness)
+    };
+  });
+}
 
 function levelFromSignals(text: string, low: string[], high: string[]): Level {
   const source = words(text);
@@ -216,11 +264,12 @@ export function clarificationQuestions(profile: TaskProfile): string[] {
 }
 
 export function generateSubtasks(profile: TaskProfile): Subtask[] {
-  const common: Subtask[] = [
+  const common: SubtaskSeed[] = [
     {
       title: "Confirm scope and acceptance criteria",
       owner: "Product + tech lead",
       estimateHours: "1-2h",
+      effortWeight: profile.ambiguity === "high" ? 1.1 : 0.8,
       aiHelpfulness: profile.ambiguity === "high" ? 78 : 55,
       parallelizable: false,
       criticalPath: true,
@@ -230,6 +279,7 @@ export function generateSubtasks(profile: TaskProfile): Subtask[] {
       title: "Map dependencies and test fixtures",
       owner: "Developer",
       estimateHours: "2-4h",
+      effortWeight: profile.dependencies === "high" ? 1.25 : 0.95,
       aiHelpfulness: profile.dependencies === "high" ? 48 : 64,
       parallelizable: true,
       criticalPath: profile.dependencies === "high",
@@ -237,7 +287,7 @@ export function generateSubtasks(profile: TaskProfile): Subtask[] {
     }
   ];
 
-  const byType: Record<TaskProfile["task_type"], Subtask[]> = {
+  const byType: Record<TaskProfile["task_type"], SubtaskSeed[]> = {
     "frontend feature": [
       {
         title: "Build UI states and validation",
@@ -440,66 +490,147 @@ export function generateSubtasks(profile: TaskProfile): Subtask[] {
     ]
   };
 
-  return [...common, ...byType[profile.task_type]];
+  return withSubtaskMetadata([...common, ...byType[profile.task_type]]);
 }
 
-export function buildAnalysis(ticket: string, answers: Record<string, string> = {}): AnalysisResult {
+function buildSources(): Source[] {
+  return [
+    {
+      name: "Manual",
+      status: "connected",
+      fields: ["title", "description", "acceptance hints"],
+      note: "Primary task text entered by the user."
+    },
+    {
+      name: "OpenAI",
+      status: process.env.OPENAI_API_KEY ? "connected" : "demo",
+      fields: ["scope summary", "clarifying questions", "workflow explanation"],
+      note: process.env.OPENAI_API_KEY
+        ? "Live model path is available on the server."
+        : "Demo fallback mirrors the production AI contract."
+    },
+    {
+      name: "GitHub",
+      status: "ready",
+      fields: ["issues", "labels", "linked pull requests"],
+      note: "Paste a public GitHub issue URL to import real issue metadata."
+    },
+    {
+      name: "Supabase",
+      status: process.env.NEXT_PUBLIC_SUPABASE_URL ? "connected" : "demo",
+      fields: ["history", "saved estimations", "team calibration"],
+      note: "Persists history when Supabase environment variables are configured."
+    },
+    {
+      name: "Jira",
+      status: "demo",
+      fields: ["status", "comments", "labels", "original estimate"],
+      note: "Connector-ready panel for the hackathon demo."
+    },
+    {
+      name: "Linear",
+      status: "demo",
+      fields: ["team", "cycle", "priority", "issue relations"],
+      note: "Connector-ready panel for team context."
+    }
+  ];
+}
+
+export function buildExecutionPlan(profile: TaskProfile): ExecutionPlan {
+  const subtasks = generateSubtasks(profile);
+  const parallel = subtasks.filter((subtask) => subtask.parallelizable);
+
+  return {
+    subtasks,
+    execution_order: [
+      "Import linked context and normalize the task profile.",
+      "Resolve the highest-impact clarification before coding.",
+      "Split critical path work from parallel research, tests, and docs.",
+      "Use AI for scaffolding, examples, edge cases, and manager-ready summaries.",
+      "Hold human review for security, correctness, and release readiness."
+    ],
+    parallelizable_groups:
+      parallel.length > 1
+        ? [
+            parallel.slice(0, 2).map((subtask) => subtask.title),
+            parallel.slice(2).map((subtask) => subtask.title).filter(Boolean)
+          ].filter((group) => group.length > 0)
+        : parallel.map((subtask) => [subtask.title])
+  };
+}
+
+export function buildOptimization(
+  profile: TaskProfile,
+  estimation: Estimation,
+  plan: ExecutionPlan,
+  sources: Source[]
+): OptimizationResult {
+  return {
+    current_plan_estimate: {
+      min_hours: estimation.without_ai_min_hours,
+      max_hours: estimation.without_ai_max_hours
+    },
+    optimized_plan_estimate: {
+      min_hours: estimation.with_ai_min_hours,
+      max_hours: estimation.with_ai_max_hours
+    },
+    key_improvements: [
+      plan.parallelizable_groups.length > 0
+        ? "Parallelize dependency mapping, fixture setup, and documentation."
+        : "Keep the critical path explicit before implementation starts.",
+      profile.ai_leverage === "high"
+        ? "Use AI heavily for drafting, synthesis, examples, and acceptance criteria."
+        : "Use AI after humans identify the correct implementation or debugging path.",
+      "Focus senior review on security, correctness, release risk, and edge cases.",
+      "Convert ambiguous work into testable checkpoints before coding."
+    ],
+    data_sources_used: sources,
+    considered: [
+      `Complexity: ${profile.complexity}`,
+      `Dependencies: ${profile.dependencies}`,
+      `Review load: ${profile.review_load}`,
+      `Research load: ${profile.research_load}`,
+      `Required seniority: ${profile.required_seniority}`,
+      `Iteration risk: ${profile.iteration_risk}`
+    ]
+  };
+}
+
+type BuildAnalysisOptions = {
+  id?: string;
+  created_at?: string;
+};
+
+export function buildAnalysis(
+  ticket: string,
+  answers: Record<string, string> = {},
+  options: BuildAnalysisOptions = {}
+): AnalysisResult {
   const profile = inferTaskProfile(`${ticket}\n${Object.values(answers).join("\n")}`);
   const estimation = scoreTask(profile);
   const questions = clarificationQuestions(profile);
   const title = ticket.split(/[.\n]/)[0]?.replace(/^#+\s*/, "").slice(0, 86) || "Untitled task";
   const highRisk = profile.blocker_probability === "high" || profile.ambiguity === "high";
+  const sources = buildSources();
+  const plan = buildExecutionPlan(profile);
+  const optimization = buildOptimization(profile, estimation, plan, sources);
+  const now = new Date().toISOString();
 
   return {
-    id: crypto.randomUUID(),
+    id: options.id ?? crypto.randomUUID(),
     title,
+    raw_input: ticket,
+    created_at: options.created_at ?? now,
+    updated_at: now,
     summary: `${profile.task_type} with ${profile.complexity} complexity, ${profile.ambiguity} ambiguity, and ${profile.ai_leverage} AI leverage.`,
     developerSummary: `Start by locking acceptance criteria and the critical path. AI is most useful for scaffolding, test matrix generation, and turning imported context into implementation checklists.`,
     managerSummary: `Plan this as a ${estimation.with_ai_min_hours}-${estimation.with_ai_max_hours} hour AI-assisted effort with ${estimation.confidence_score}% confidence. The biggest productivity gain comes from reducing ambiguity before coding starts.`,
     profile,
     clarifyingQuestions: questions,
     answeredClarifications: answers,
+    clarification_answers: answers,
     estimation,
-    sources: [
-      {
-        name: "Manual",
-        status: "connected",
-        fields: ["title", "description", "acceptance hints"],
-        note: "Primary ticket text entered by the user."
-      },
-      {
-        name: "OpenAI",
-        status: process.env.OPENAI_API_KEY ? "connected" : "demo",
-        fields: ["scope summary", "clarifying questions", "workflow explanation"],
-        note: process.env.OPENAI_API_KEY
-          ? "Live model path is available on the server."
-          : "Demo fallback mirrors the production AI contract."
-      },
-      {
-        name: "GitHub",
-        status: "ready",
-        fields: ["issues", "labels", "linked pull requests"],
-        note: "Paste a public GitHub issue URL to import real issue metadata."
-      },
-      {
-        name: "Supabase",
-        status: process.env.NEXT_PUBLIC_SUPABASE_URL ? "connected" : "demo",
-        fields: ["history", "saved estimations", "team calibration"],
-        note: "Persists history when Supabase environment variables are configured."
-      },
-      {
-        name: "Jira",
-        status: "demo",
-        fields: ["status", "comments", "labels", "original estimate"],
-        note: "Connector-ready panel for the hackathon demo."
-      },
-      {
-        name: "Linear",
-        status: "demo",
-        fields: ["team", "cycle", "priority", "issue relations"],
-        note: "Connector-ready panel for team context."
-      }
-    ],
+    sources,
     blockers: [
       highRisk ? "Acceptance criteria or reproduction path may remain unclear." : "Dependency owner availability may slow handoff.",
       profile.dependencies === "high" ? "External API or backend contract can block delivery." : "Test data and fixture setup need confirmation.",
@@ -512,14 +643,10 @@ export function buildAnalysis(ticket: string, answers: Record<string, string> = 
         : "AI helps most after humans identify the correct implementation path.",
       "Parallel dependency mapping can happen while the main implementation starts."
     ],
-    subtasks: generateSubtasks(profile),
-    workflow: [
-      "Import linked context and normalize the task profile.",
-      "Resolve the highest-impact clarification before coding.",
-      "Split critical path work from parallel research, tests, and docs.",
-      "Use AI for scaffolding, examples, edge cases, and manager-ready summaries.",
-      "Hold human review for security, correctness, and release readiness."
-    ],
+    subtasks: plan.subtasks,
+    workflow: plan.execution_order,
+    plan,
+    optimization,
     beforeOptimization: [
       "Estimate from title and intuition",
       "Discover blockers during implementation",

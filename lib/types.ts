@@ -11,6 +11,7 @@ export type TaskType =
   | "research summary";
 
 export type Level = "low" | "medium" | "high";
+export type Priority = "Low" | "Medium" | "High";
 
 export type TaskProfile = {
   task_type: TaskType;
@@ -38,7 +39,10 @@ export type Subtask = {
   title: string;
   owner: string;
   estimateHours: string;
+  sharePercent: number;
+  priority: Priority;
   aiHelpfulness: number;
+  aiHelpfulnessTag: Priority;
   parallelizable: boolean;
   criticalPath: boolean;
   guidance: string;
@@ -59,21 +63,59 @@ export type Estimation = {
 export type AnalysisResult = {
   id: string;
   title: string;
+  raw_input: string;
+  created_at: string;
+  updated_at: string;
   summary: string;
   developerSummary: string;
   managerSummary: string;
   profile: TaskProfile;
   clarifyingQuestions: string[];
   answeredClarifications: Record<string, string>;
+  clarification_answers: Record<string, string>;
   estimation: Estimation;
   sources: Source[];
   blockers: string[];
   accelerators: string[];
   subtasks: Subtask[];
   workflow: string[];
+  plan: ExecutionPlan;
+  optimization: OptimizationResult;
   beforeOptimization: string[];
   afterOptimization: string[];
   explanation: string[];
+};
+
+export type ExecutionPlan = {
+  subtasks: Subtask[];
+  execution_order: string[];
+  parallelizable_groups: string[][];
+};
+
+export type OptimizationResult = {
+  current_plan_estimate: {
+    min_hours: number;
+    max_hours: number;
+  };
+  optimized_plan_estimate: {
+    min_hours: number;
+    max_hours: number;
+  };
+  key_improvements: string[];
+  data_sources_used: Source[];
+  considered: string[];
+};
+
+export type TaskDraft = {
+  id: string | null;
+  raw_input: string;
+  created_at: string | null;
+  clarification_answers: Record<string, string>;
+  clarifyingQuestions: string[];
+  result: AnalysisResult | null;
+  githubUrl?: string;
+  importNote?: string;
+  updated_at: string;
 };
 
 export type DemoTask = {

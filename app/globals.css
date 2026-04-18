@@ -3,17 +3,17 @@
 @tailwind utilities;
 
 :root {
-  --background: 210 20% 98%;
-  --foreground: 216 16% 13%;
-  --muted: 190 18% 93%;
-  --muted-foreground: 215 12% 40%;
-  --card: 0 0% 100%;
-  --card-foreground: 216 16% 13%;
-  --border: 200 15% 86%;
-  --input: 200 15% 86%;
-  --ring: 173 78% 32%;
-  --primary: 173 78% 32%;
-  --primary-foreground: 0 0% 100%;
+  --background: 190 68% 5%;
+  --foreground: 180 18% 96%;
+  --muted: 190 28% 11%;
+  --muted-foreground: 185 10% 68%;
+  --card: 190 42% 8%;
+  --card-foreground: 180 18% 96%;
+  --border: 186 24% 18%;
+  --input: 186 24% 18%;
+  --ring: 158 72% 56%;
+  --primary: 158 72% 56%;
+  --primary-foreground: 190 68% 5%;
   --accent: 346 79% 58%;
   --accent-foreground: 0 0% 100%;
   --warning: 38 92% 50%;
@@ -30,9 +30,11 @@ html {
 
 body {
   min-height: 100vh;
-  background: linear-gradient(180deg, rgba(244, 248, 248, 0.92), rgba(247, 249, 250, 1));
+  background: #041014;
   color: hsl(var(--foreground));
   font-feature-settings: "rlig" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 button,
