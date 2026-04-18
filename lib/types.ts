@@ -12,6 +12,19 @@ export type TaskType =
 
 export type Level = "low" | "medium" | "high";
 export type Priority = "Low" | "Medium" | "High";
+export type ClarificationQuestionType = "yes_no" | "short_text";
+
+export type ClarificationQuestion = {
+  id: string;
+  question: string;
+  type: ClarificationQuestionType;
+};
+
+export type ClarificationDecision = {
+  clarificationNeeded: boolean;
+  questions: ClarificationQuestion[];
+  reason?: string;
+};
 
 export type TaskProfile = {
   task_type: TaskType;
@@ -70,7 +83,7 @@ export type AnalysisResult = {
   developerSummary: string;
   managerSummary: string;
   profile: TaskProfile;
-  clarifyingQuestions: string[];
+  clarifyingQuestions: ClarificationQuestion[];
   answeredClarifications: Record<string, string>;
   clarification_answers: Record<string, string>;
   estimation: Estimation;
@@ -111,7 +124,8 @@ export type TaskDraft = {
   raw_input: string;
   created_at: string | null;
   clarification_answers: Record<string, string>;
-  clarifyingQuestions: string[];
+  clarifyingQuestions: ClarificationQuestion[];
+  manual_extra_context?: string;
   result: AnalysisResult | null;
   githubUrl?: string;
   importNote?: string;

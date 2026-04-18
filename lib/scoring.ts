@@ -1,5 +1,7 @@
 import {
   AnalysisResult,
+  ClarificationDecision,
+  ClarificationQuestion,
   Estimation,
   ExecutionPlan,
   Level,
@@ -51,6 +53,14 @@ const aiSavings: Record<Level, number> = {
 };
 
 const words = (text: string) => text.toLowerCase();
+
+function questionId(seed: string) {
+  return seed
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
+}
 
 type SubtaskSeed = Omit<Subtask, "sharePercent" | "priority" | "aiHelpfulnessTag"> & {
   effortWeight?: number;
@@ -244,23 +254,58 @@ export function scoreTask(profile: TaskProfile): Estimation {
   };
 }
 
-export function clarificationQuestions(profile: TaskProfile): string[] {
-  const questions: string[] = [];
+export function clarificationQuestions(profile: TaskProfile, ticket = ""): ClarificationQuestion[] {
+  const title = ticket.split(/[.\n]/)[0]?.trim().slice(0, 72) || profile.task_type;
+  const questions: ClarificationQuestion[] = [];
 
   if (profile.ambiguity !== "low") {
-    questions.push("What acceptance criteria would make this task unquestionably done?");
+    questions.push({
+      id: questionId(`acceptance-${profile.task_type}-${title}`),
+      question: `What would make "${title}" unquestionably done?`,
+      type: "short_text"
+    });
   }
   if (profile.dependencies !== "low") {
-    questions.push("Which systems, people, or APIs can block implementation?");
+    questions.push({
+      id: questionId(`dependency-${profile.task_type}-${profile.dependencies}`),
+      question: `Are any ${profile.task_type} dependencies, owners, APIs, or approvals likely to block this?`,
+      type: "yes_no"
+    });
   }
   if (profile.blocker_probability !== "low") {
-    questions.push("Is there production evidence, logs, or linked context the team should inspect first?");
+    questions.push({
+      id: questionId(`evidence-${profile.task_type}-${profile.blocker_probability}`),
+      question: `Do you already have logs, examples, linked tickets, or evidence for this ${profile.task_type}?`,
+      type: "yes_no"
+    });
   }
   if (profile.review_load === "high" || profile.coordination_load === "high") {
-    questions.push("Who needs to review or approve the work before release?");
+    questions.push({
+      id: questionId(`review-${profile.task_type}-${profile.review_load}`),
+      question: `Who needs to review or approve the ${profile.task_type} before release?`,
+      type: "short_text"
+    });
   }
 
   return questions.slice(0, 4);
+}
+
+export function buildClarificationDecision(ticket: string): ClarificationDecision {
+  const profile = inferTaskProfile(ticket);
+  const questions = clarificationQuestions(profile, ticket);
+  const clarificationNeeded =
+    profile.ambiguity !== "low" ||
+    profile.dependencies === "high" ||
+    profile.blocker_probability === "high" ||
+    profile.review_load === "high";
+
+  return {
+    clarificationNeeded,
+    questions: clarificationNeeded ? questions.slice(0, 5) : [],
+    reason: clarificationNeeded
+      ? `More context can improve the ${profile.task_type} estimate because ambiguity is ${profile.ambiguity}, dependencies are ${profile.dependencies}, and review load is ${profile.review_load}.`
+      : `The task looks clear enough for a first estimate as a ${profile.task_type}.`
+  };
 }
 
 export function generateSubtasks(profile: TaskProfile): Subtask[] {
@@ -608,7 +653,7 @@ export function buildAnalysis(
 ): AnalysisResult {
   const profile = inferTaskProfile(`${ticket}\n${Object.values(answers).join("\n")}`);
   const estimation = scoreTask(profile);
-  const questions = clarificationQuestions(profile);
+  const questions = clarificationQuestions(profile, ticket);
   const title = ticket.split(/[.\n]/)[0]?.replace(/^#+\s*/, "").slice(0, 86) || "Untitled task";
   const highRisk = profile.blocker_probability === "high" || profile.ambiguity === "high";
   const sources = buildSources();

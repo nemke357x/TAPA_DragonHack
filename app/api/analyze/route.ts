@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { buildAnalysis } from "@/lib/scoring";
+import { ClarificationQuestion } from "@/lib/types";
 
 export async function POST(request: Request) {
   const body = (await request.json()) as {
     ticket?: string;
     answers?: Record<string, string>;
+    clarificationQuestions?: ClarificationQuestion[];
+    manualExtraContext?: string;
     taskId?: string;
     createdAt?: string;
   };
@@ -15,10 +18,33 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Ticket text is required." }, { status: 400 });
   }
 
-  const fallback = buildAnalysis(ticket, body.answers ?? {}, {
+  const clarificationQuestions = Array.isArray(body.clarificationQuestions)
+    ? body.clarificationQuestions.slice(0, 5)
+    : [];
+  const answers = {
+    ...(clarificationQuestions.length > 0
+      ? {
+          "Clarification questions considered": clarificationQuestions
+            .map((question) => question.question)
+            .join(" | ")
+        }
+      : {}),
+    ...(body.answers ?? {}),
+    ...(body.manualExtraContext?.trim()
+      ? {
+          "Manual extra context": body.manualExtraContext.trim()
+        }
+      : {})
+  };
+
+  const fallback = buildAnalysis(ticket, answers, {
     id: body.taskId,
     created_at: body.createdAt
   });
+  fallback.clarifyingQuestions =
+    clarificationQuestions.length > 0 ? clarificationQuestions : fallback.clarifyingQuestions;
+  fallback.answeredClarifications = answers;
+  fallback.clarification_answers = answers;
 
   if (!process.env.OPENAI_API_KEY) {
     return NextResponse.json({ result: fallback, mode: "demo" });
@@ -40,7 +66,9 @@ export async function POST(request: Request) {
           role: "user",
           content: JSON.stringify({
             ticket,
-            answers: body.answers ?? {},
+            answers,
+            clarificationQuestions,
+            manualExtraContext: body.manualExtraContext ?? "",
             deterministicResult: fallback
           })
         }

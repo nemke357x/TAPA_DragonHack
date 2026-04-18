@@ -47,7 +47,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { demoTasks } from "@/lib/demo-data";
-import { clarificationQuestions, inferTaskProfile, scoreTask } from "@/lib/scoring";
+import { inferTaskProfile, scoreTask } from "@/lib/scoring";
 import {
   clearDraft,
   loadDraft,
@@ -56,7 +56,7 @@ import {
   saveDraft,
   saveHistoryRecord
 } from "@/lib/storage";
-import { AnalysisResult } from "@/lib/types";
+import { AnalysisResult, ClarificationDecision, ClarificationQuestion } from "@/lib/types";
 import { cn, formatHours } from "@/lib/utils";
 
 type PageStep = "input" | "clarify" | "analyze" | "results" | "plan" | "optimize";
@@ -80,13 +80,6 @@ const analyzeStages = [
 
 const defaultTask = "";
 
-const defaultClarifiers = [
-  "Is the main backend or API already available?",
-  "Does the design or desired output already exist?",
-  "Does this need production-ready tests?",
-  "Who needs to review or approve this before release?"
-];
-
 const chartColors = ["#35d399", "#22d3ee", "#facc15", "#fb7185", "#a7f3d0", "#93c5fd"];
 
 function isStep(value: string | null): value is PageStep {
@@ -101,17 +94,46 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function makeAnswersPayload(answers: Record<string, string>) {
-  return Object.fromEntries(
-    Object.entries(answers)
-      .filter(([, value]) => value.trim())
-      .map(([key, value]) => [key, `${key}: ${value}`])
-  );
+function makeAnswersPayload(
+  questions: ClarificationQuestion[],
+  answers: Record<string, string>
+) {
+  const payload: Record<string, string> = {};
+
+  questions.forEach((question) => {
+    const answer = answers[question.id]?.trim();
+    if (!answer) return;
+    payload[question.question] = `${question.question}: ${answer}`;
+  });
+
+  return payload;
 }
 
-function generateQuestions(text: string) {
-  const profile = inferTaskProfile(text);
-  return Array.from(new Set([...clarificationQuestions(profile), ...defaultClarifiers])).slice(0, 4);
+function normalizeClarificationQuestions(value: unknown): ClarificationQuestion[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item, index) => {
+      if (typeof item === "string") {
+        return {
+          id: `legacy-${index + 1}`,
+          question: item,
+          type: "yes_no" as const
+        };
+      }
+
+      if (!item || typeof item !== "object") return null;
+
+      const source = item as Partial<ClarificationQuestion>;
+      if (!source.question) return null;
+
+      return {
+        id: source.id ?? `clarify-${index + 1}`,
+        question: source.question,
+        type: source.type === "short_text" ? "short_text" : "yes_no"
+      };
+    })
+    .filter(Boolean) as ClarificationQuestion[];
 }
 
 function averageRange(min: number, max: number) {
@@ -215,6 +237,7 @@ function EstimateApp() {
   const searchParams = useSearchParams();
   const stepParam = searchParams.get("step");
   const activeStep: PageStep = isStep(stepParam) ? stepParam : "input";
+  const analysisFrom = searchParams.get("from") === "clarify" ? "clarify" : "input";
   const showHistory = searchParams.get("view") === "history";
   const taskFromUrl = searchParams.get("task");
 
@@ -223,7 +246,10 @@ function EstimateApp() {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [createdAt, setCreatedAt] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [questions, setQuestions] = useState<string[]>([]);
+  const [questions, setQuestions] = useState<ClarificationQuestion[]>([]);
+  const [manualExtraContext, setManualExtraContext] = useState("");
+  const [clarificationReason, setClarificationReason] = useState("");
+  const [clarificationLoading, setClarificationLoading] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [history, setHistory] = useState<AnalysisResult[]>([]);
   const [loadingStage, setLoadingStage] = useState(0);
@@ -234,16 +260,25 @@ function EstimateApp() {
   const [importNote, setImportNote] = useState("");
   const [error, setError] = useState("");
   const analysisKeyRef = useRef<string | null>(null);
+  const clarificationKeyRef = useRef<string | null>(null);
 
-  function routeFor(step: PageStep, taskId = activeTaskId) {
+  function routeFor(step: PageStep, taskId = activeTaskId, from?: "input" | "clarify") {
     const params = new URLSearchParams();
     params.set("step", step);
     if (taskId) params.set("task", taskId);
+    if (step === "analyze" && from) params.set("from", from);
     return `/?${params.toString()}`;
   }
 
-  function navigate(step: PageStep, options: { replace?: boolean; taskId?: string | null } = {}) {
-    const target = routeFor(step, options.taskId === undefined ? activeTaskId : options.taskId);
+  function navigate(
+    step: PageStep,
+    options: { replace?: boolean; taskId?: string | null; from?: "input" | "clarify" } = {}
+  ) {
+    const target = routeFor(
+      step,
+      options.taskId === undefined ? activeTaskId : options.taskId,
+      options.from
+    );
     if (options.replace) {
       router.replace(target);
     } else {
@@ -256,11 +291,27 @@ function EstimateApp() {
   }
 
   function restoreRecord(record: AnalysisResult) {
+    const restoredQuestions = normalizeClarificationQuestions(record.clarifyingQuestions);
+    const restoredAnswers = record.clarification_answers ?? record.answeredClarifications ?? {};
+    const answersById = Object.fromEntries(
+      restoredQuestions
+        .map((question) => [question.id, restoredAnswers[question.question]])
+        .filter(([, answer]) => typeof answer === "string")
+    ) as Record<string, string>;
+
     setActiveTaskId(record.id);
     setCreatedAt(record.created_at);
     setTaskText(record.raw_input);
-    setAnswers(record.clarification_answers ?? record.answeredClarifications ?? {});
-    setQuestions(record.clarifyingQuestions.length ? record.clarifyingQuestions : generateQuestions(record.raw_input));
+    setAnswers({ ...restoredAnswers, ...answersById });
+    setManualExtraContext(
+      record.clarification_answers?.["Manual extra context"] ??
+        record.answeredClarifications?.["Manual extra context"] ??
+        record.clarification_answers?.["Anything else we should consider?"] ??
+        record.answeredClarifications?.["Anything else we should consider?"] ??
+        ""
+    );
+    setQuestions(restoredQuestions);
+    setClarificationReason("");
     setResult(record);
     setSaved(true);
     setError("");
@@ -273,12 +324,16 @@ function EstimateApp() {
     setCreatedAt(null);
     setAnswers({});
     setQuestions([]);
+    setManualExtraContext("");
+    setClarificationReason("");
+    setClarificationLoading(false);
     setResult(null);
     setSaved(false);
     setGithubUrl("");
     setImportNote("");
     setError("");
     analysisKeyRef.current = null;
+    clarificationKeyRef.current = null;
     router.push("/?step=input");
   }
 
@@ -298,7 +353,8 @@ function EstimateApp() {
       setCreatedAt(draft.created_at);
       setTaskText(draft.raw_input);
       setAnswers(draft.clarification_answers ?? {});
-      setQuestions(draft.clarifyingQuestions ?? []);
+      setQuestions(normalizeClarificationQuestions(draft.clarifyingQuestions));
+      setManualExtraContext(draft.manual_extra_context ?? "");
       setResult(draft.result);
       setGithubUrl(draft.githubUrl ?? "");
       setImportNote(draft.importNote ?? "");
@@ -334,12 +390,24 @@ function EstimateApp() {
       created_at: createdAt,
       clarification_answers: answers,
       clarifyingQuestions: questions,
+      manual_extra_context: manualExtraContext,
       result,
       githubUrl,
       importNote,
       updated_at: new Date().toISOString()
     });
-  }, [activeTaskId, answers, createdAt, githubUrl, hydrated, importNote, questions, result, taskText]);
+  }, [
+    activeTaskId,
+    answers,
+    createdAt,
+    githubUrl,
+    hydrated,
+    importNote,
+    manualExtraContext,
+    questions,
+    result,
+    taskText
+  ]);
 
   useEffect(() => {
     if (!hydrated || showHistory) return;
@@ -361,6 +429,15 @@ function EstimateApp() {
 
     runAnalysis();
   }, [activeStep, activeTaskId, hydrated, isAnalyzing, result, showHistory, taskText]);
+
+  useEffect(() => {
+    if (!hydrated || showHistory || activeStep !== "clarify") return;
+    const trimmed = taskText.trim();
+    if (!trimmed || clarificationLoading) return;
+    if (clarificationKeyRef.current === trimmed) return;
+
+    loadClarificationQuestions(trimmed);
+  }, [activeStep, clarificationLoading, hydrated, showHistory, taskText]);
 
   const historySeries = useMemo(() => buildHistorySeries(history), [history]);
   const taskTypeDistribution = useMemo(
@@ -387,8 +464,11 @@ function EstimateApp() {
       setCreatedAt(null);
       setAnswers({});
       setQuestions([]);
+      setManualExtraContext("");
+      setClarificationReason("");
       setSaved(false);
       analysisKeyRef.current = null;
+      clarificationKeyRef.current = null;
     }
   }
 
@@ -397,29 +477,85 @@ function EstimateApp() {
     setImportNote("");
   }
 
-  function beginClarify() {
+  function ensureTaskRecord() {
     const trimmed = taskText.trim();
     if (!trimmed) {
       setError("Paste a task description first.");
-      return;
+      return null;
     }
 
     const id = activeTaskId ?? crypto.randomUUID();
     const created = createdAt ?? new Date().toISOString();
     setActiveTaskId(id);
     setCreatedAt(created);
-    setQuestions(generateQuestions(trimmed));
+    setError("");
+
+    return { id, created, trimmed };
+  }
+
+  function beginQuickAnalysis() {
+    const task = ensureTaskRecord();
+    if (!task) return;
+
     setResult(null);
     setSaved(false);
-    setError("");
-    navigate("clarify", { taskId: id });
+    analysisKeyRef.current = null;
+    navigate("analyze", { taskId: task.id, from: "input" });
+  }
+
+  async function loadClarificationQuestions(trimmed: string) {
+    clarificationKeyRef.current = trimmed;
+    setClarificationLoading(true);
+    setClarificationReason("AI is checking whether more context would improve the estimate.");
+
+    try {
+      const response = await fetch("/api/clarify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket: trimmed })
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Could not generate clarification questions.");
+      }
+
+      const decision = payload.decision as ClarificationDecision;
+      setQuestions(decision.questions ?? []);
+      setClarificationReason(
+        decision.reason ??
+          (decision.clarificationNeeded
+            ? "AI found a few useful questions for this task."
+            : "AI thinks this task is clear enough for a first estimate.")
+      );
+    } catch (clarificationError) {
+      setQuestions([]);
+      setClarificationReason(
+        clarificationError instanceof Error
+          ? clarificationError.message
+          : "Clarification generation failed. You can still add manual context."
+      );
+    } finally {
+      setClarificationLoading(false);
+    }
+  }
+
+  function beginClarify() {
+    const task = ensureTaskRecord();
+    if (!task) return;
+
+    setResult(null);
+    setSaved(false);
+    analysisKeyRef.current = null;
+    navigate("clarify", { taskId: task.id });
+    loadClarificationQuestions(task.trimmed);
   }
 
   function continueToAnalyze() {
     setResult(null);
     setSaved(false);
     analysisKeyRef.current = null;
-    navigate("analyze");
+    navigate("analyze", { from: "clarify" });
   }
 
   async function runAnalysis() {
@@ -428,7 +564,7 @@ function EstimateApp() {
 
     const taskId = activeTaskId ?? crypto.randomUUID();
     const taskCreatedAt = createdAt ?? new Date().toISOString();
-    const payloadAnswers = makeAnswersPayload(answers);
+    const payloadAnswers = makeAnswersPayload(questions, answers);
     const runKey = `${taskId}:${trimmed}:${JSON.stringify(payloadAnswers)}`;
 
     if (analysisKeyRef.current === runKey) return;
@@ -441,7 +577,9 @@ function EstimateApp() {
     setError("");
 
     try {
-      const localProfile = inferTaskProfile(`${trimmed}\n${Object.values(payloadAnswers).join("\n")}`);
+      const localProfile = inferTaskProfile(
+        `${trimmed}\n${Object.values(payloadAnswers).join("\n")}\n${manualExtraContext}`
+      );
       await sleep(420);
       setLoadingStage(1);
       setStageDetail(
@@ -468,6 +606,8 @@ function EstimateApp() {
         body: JSON.stringify({
           ticket: trimmed,
           answers: payloadAnswers,
+          clarificationQuestions: questions,
+          manualExtraContext: manualExtraContext.trim(),
           taskId,
           createdAt: taskCreatedAt
         })
@@ -486,7 +626,11 @@ function EstimateApp() {
       const nextHistory = await saveHistoryRecord(nextResult);
       setHistory(nextHistory);
       setResult(nextResult);
-      setQuestions(nextResult.clarifyingQuestions.length ? nextResult.clarifyingQuestions : questions);
+      setQuestions(
+        nextResult.clarifyingQuestions.length
+          ? normalizeClarificationQuestions(nextResult.clarifyingQuestions)
+          : questions
+      );
       setSaved(true);
 
       await sleep(520);
@@ -572,7 +716,8 @@ function EstimateApp() {
                 <InputScreen
                   taskText={taskText}
                   setTaskText={handleTaskTextChange}
-                  onAnalyze={beginClarify}
+                  onAnalyze={beginQuickAnalysis}
+                  onAddContext={beginClarify}
                   githubUrl={githubUrl}
                   setGithubUrl={setGithubUrl}
                   importGithubIssue={importGithubIssue}
@@ -585,9 +730,13 @@ function EstimateApp() {
 
               {activeStep === "clarify" && (
                 <ClarifyScreen
-                  questions={questions.length ? questions : generateQuestions(taskText)}
+                  questions={questions}
                   answers={answers}
                   setAnswers={setAnswers}
+                  manualExtraContext={manualExtraContext}
+                  setManualExtraContext={setManualExtraContext}
+                  loading={clarificationLoading}
+                  reason={clarificationReason}
                   onBack={() => navigate("input")}
                   onContinue={continueToAnalyze}
                 />
@@ -600,7 +749,7 @@ function EstimateApp() {
                   error={error}
                   isAnalyzing={isAnalyzing}
                   result={result}
-                  onBack={() => navigate("clarify")}
+                  onBack={() => navigate(analysisFrom === "clarify" ? "clarify" : "input")}
                   onContinue={() => navigate("results")}
                   onRetry={() => {
                     analysisKeyRef.current = null;
@@ -758,6 +907,7 @@ function InputScreen({
   taskText,
   setTaskText,
   onAnalyze,
+  onAddContext,
   githubUrl,
   setGithubUrl,
   importGithubIssue,
@@ -769,6 +919,7 @@ function InputScreen({
   taskText: string;
   setTaskText: (value: string) => void;
   onAnalyze: () => void;
+  onAddContext: () => void;
   githubUrl: string;
   setGithubUrl: (value: string) => void;
   importGithubIssue: () => void;
@@ -795,13 +946,21 @@ function InputScreen({
           placeholder="Build password reset flow with token expiry, email link, backend validation, and frontend reset form..."
         />
 
-        <div className="-mt-7 flex justify-center">
+        <div className="-mt-7 flex flex-col items-center justify-center gap-2 sm:flex-row">
           <Button
             size="lg"
-            className="h-12 min-w-48 bg-emerald-400 text-[#041014] hover:bg-emerald-300"
+            className="h-12 min-w-44 bg-emerald-400 text-[#041014] hover:bg-emerald-300"
             onClick={onAnalyze}
           >
-            Analyze task <ArrowRight className="h-4 w-4" />
+            Analyze Task <ArrowRight className="h-4 w-4" />
+          </Button>
+          <Button
+            size="lg"
+            variant="secondary"
+            className="h-12 min-w-44 border-white/15 bg-[#0a1c21] text-white hover:border-emerald-300/45 hover:bg-white/10"
+            onClick={onAddContext}
+          >
+            Add More Context <MessageSquare className="h-4 w-4" />
           </Button>
         </div>
       </div>
@@ -881,12 +1040,20 @@ function ClarifyScreen({
   questions,
   answers,
   setAnswers,
+  manualExtraContext,
+  setManualExtraContext,
+  loading,
+  reason,
   onBack,
   onContinue
 }: {
-  questions: string[];
+  questions: ClarificationQuestion[];
   answers: Record<string, string>;
   setAnswers: Dispatch<SetStateAction<Record<string, string>>>;
+  manualExtraContext: string;
+  setManualExtraContext: (value: string) => void;
+  loading: boolean;
+  reason: string;
   onBack: () => void;
   onContinue: () => void;
 }) {
@@ -894,31 +1061,67 @@ function ClarifyScreen({
     <DarkFrame>
       <div className="mx-auto max-w-5xl">
         <div className="text-center">
-          <h2 className="text-2xl font-black tracking-normal">A few quick questions</h2>
+          <h2 className="text-2xl font-black tracking-normal">AI context check</h2>
           <p className="mt-2 text-xs font-bold text-white/50">
-            Help us understand the task better so we can give you a more accurate estimate.
+            Answer only what you know. These details are optional, but they can sharpen the
+            estimate and plan.
           </p>
+          {reason && <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-emerald-200/80">{reason}</p>}
         </div>
 
-        <div className="mt-7 grid gap-4 md:grid-cols-2">
-          {questions.map((question, index) => (
-            <ClarifyCard
-              key={question}
-              question={question}
-              index={index}
-              value={answers[question] ?? ""}
-              onChange={(value) => setAnswers((current) => ({ ...current, [question]: value }))}
-            />
-          ))}
-        </div>
+        {loading ? (
+          <div className="mt-7 rounded-lg border border-white/10 bg-white/[0.045] p-6 text-center">
+            <Loader2 className="mx-auto h-6 w-6 animate-spin text-emerald-300" />
+            <p className="mt-3 text-sm font-black text-white/75">
+              Generating task-specific questions...
+            </p>
+          </div>
+        ) : questions.length > 0 ? (
+          <div className="mt-7 grid gap-4 md:grid-cols-2">
+            {questions.map((question) => (
+              <ClarifyCard
+                key={question.id}
+                question={question}
+                value={answers[question.id] ?? ""}
+                onChange={(value) =>
+                  setAnswers((current) => ({ ...current, [question.id]: value }))
+                }
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="mt-7 rounded-lg border border-emerald-300/15 bg-emerald-300/10 p-5 text-center">
+            <CheckCircle2 className="mx-auto h-7 w-7 text-emerald-300" />
+            <p className="mt-3 text-sm font-black text-emerald-100">
+              AI thinks this task is clear enough for a first estimate.
+            </p>
+            <p className="mt-2 text-xs leading-5 text-white/50">
+              You can still add anything important below before analyzing.
+            </p>
+          </div>
+        )}
+
+        <label className="mt-5 block rounded-lg border border-white/10 bg-white/[0.045] p-4">
+          <span className="text-sm font-black text-white/85">Anything else we should consider?</span>
+          <Textarea
+            value={manualExtraContext}
+            onChange={(event) => setManualExtraContext(event.target.value)}
+            className="mt-3 min-h-[116px] border-white/10 bg-[#07181c] text-white placeholder:text-white/35"
+            placeholder="Add constraints, team context, deadlines, known blockers, review needs, or any nuance the AI did not ask about."
+          />
+        </label>
 
         <div className="mt-7 flex items-center justify-between">
           <Button variant="ghost" className="text-white/70 hover:bg-white/10" onClick={onBack}>
             <ArrowLeft className="h-4 w-4" />
             Back
           </Button>
-          <Button className="bg-emerald-400 text-[#041014] hover:bg-emerald-300" onClick={onContinue}>
-            Continue <ArrowRight className="h-4 w-4" />
+          <Button
+            className="bg-emerald-400 text-[#041014] hover:bg-emerald-300"
+            disabled={loading}
+            onClick={onContinue}
+          >
+            Analyze Task <ArrowRight className="h-4 w-4" />
           </Button>
         </div>
       </div>
@@ -929,39 +1132,54 @@ function ClarifyScreen({
 function ClarifyCard({
   question,
   value,
-  onChange,
-  index
+  onChange
 }: {
-  question: string;
+  question: ClarificationQuestion;
   value: string;
   onChange: (value: string) => void;
-  index: number;
 }) {
-  const options = index === 2 ? ["Yes", "Some", "No"] : ["Yes", "Partial", "No"];
+  const options = ["Yes", "No", "Not sure"];
 
   return (
     <div className="rounded-lg border border-white/10 bg-white/[0.055] p-4">
-      <p className="text-sm font-black text-white/90">{question}</p>
-      <div className="mt-4 grid grid-cols-3 gap-2">
-        {options.map((option) => (
-          <button
-            key={option}
-            className={cn(
-              "rounded-md border border-white/10 bg-[#0a1c21] px-2 py-2 text-xs font-black text-white/60 transition hover:border-emerald-300/40",
-              value === option && "border-emerald-300/55 bg-emerald-300/15 text-emerald-200"
-            )}
-            onClick={() => onChange(option)}
-          >
-            {option}
-          </button>
-        ))}
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-sm font-black text-white/90">{question.question}</p>
+        <span className="shrink-0 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] font-black uppercase text-white/50">
+          {question.type === "yes_no" ? "Quick" : "Short"}
+        </span>
       </div>
-      <Input
-        value={value && !options.includes(value) ? value : ""}
-        onChange={(event) => onChange(event.target.value)}
-        className="mt-3 border-white/10 bg-[#07181c] text-white placeholder:text-white/35"
-        placeholder="Optional detail"
-      />
+
+      {question.type === "yes_no" ? (
+        <>
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            {options.map((option) => (
+              <button
+                key={option}
+                className={cn(
+                  "rounded-md border border-white/10 bg-[#0a1c21] px-2 py-2 text-xs font-black text-white/60 transition hover:border-emerald-300/40",
+                  value === option && "border-emerald-300/55 bg-emerald-300/15 text-emerald-200"
+                )}
+                onClick={() => onChange(option)}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+          <Input
+            value={value && !options.includes(value) ? value : ""}
+            onChange={(event) => onChange(event.target.value)}
+            className="mt-3 border-white/10 bg-[#07181c] text-white placeholder:text-white/35"
+            placeholder="Optional detail instead of a quick answer"
+          />
+        </>
+      ) : (
+        <Textarea
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="mt-4 min-h-[96px] border-white/10 bg-[#07181c] text-white placeholder:text-white/35"
+          placeholder="Short answer"
+        />
+      )}
     </div>
   );
 }
