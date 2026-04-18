@@ -37,6 +37,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
+import { demoTasks } from "@/lib/demo-data";
 import { saveResult } from "@/lib/supabase";
 import { AnalysisResult } from "@/lib/types";
 import { cn, formatHours } from "@/lib/utils";
@@ -83,7 +84,8 @@ const optionalFields = [
   }
 ];
 
-const fallbackTicket = "";
+const fallbackTicket =
+  "Build password reset flow with token expiry, email link, backend validation, and frontend reset form.";
 
 function stepNumber(step: PageStep) {
   return productSteps.findIndex((item) => item.id === step);
@@ -180,22 +182,22 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-[#121212]">
+    <main className="min-h-screen bg-gradient-to-r from-[#17191D] to-[#101114]">
 
 
-      <div className="mx-auto w-[98vw] max-w-[1800px]">
+      <div className="mx-auto max-w-7xl">
         <header className="mb-6 text-center">
         {/* <h1 className="text-3xl font-black tracking-normal sm:text-5xl">
            Estimate your task using EstiMate
           </h1> */}
         </header>
 
-        <section className="rounded-lg border border-white/10 bg-[#141414] p-3 shadow-soft">
-          <div className="grid gap-3 lg:grid-cols-[220px_1fr]">
-            <aside className="rounded-lg bg-[#141414] p-4 text-white">
+        <section className="rounded-lg border border-white/10 bg-[#0b1117] p-3 shadow-soft">
+          <div className="grid gap-3 lg:grid-cols-[250px_1fr]">
+            <aside className="rounded-lg bg-[#06131a] p-4 text-white">
               <div className="mb-5 flex items-center gap-2">
-                <Sparkles className="h-5 w-5 text-zinc-200" />
-                <span className="font-black text-zinc-200">EstiMate AI</span>
+                <Sparkles className="h-5 w-5 text-emerald-300" />
+                <span className="font-black text-emerald-300">EstiMate AI</span>
               </div>
               <StepRail currentStep={currentStep} />
               <div className="mt-6 rounded-lg border border-white/8 bg-white/5 p-3">
@@ -207,7 +209,7 @@ export default function Home() {
               </div>
             </aside>
 
-            <section className="flex min-h-[700px] flex-col rounded-lg bg-[#171717] p-4 text-white sm:p-6">
+            <section className="min-h-[620px] rounded-lg bg-[#06131a] p-4 text-white sm:p-6">
               <TopProgress currentStep={currentStep} />
 
               {currentStep === "input" && (
@@ -259,9 +261,9 @@ export default function Home() {
               )}
             </section>
           </div>
-
-          <FlowBar />
         </section>
+
+        <FlowBar />
       </div>
     </main>
   );
@@ -281,15 +283,15 @@ function StepRail({ currentStep }: { currentStep: PageStep }) {
             key={step.id}
             className={cn(
               "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-bold text-white/45",
-              active && "bg-zinc-300/12 text-zinc-300",
+              active && "bg-emerald-400/12 text-emerald-200",
               done && "text-white/76"
             )}
           >
             <span
               className={cn(
                 "flex h-6 w-6 items-center justify-center rounded-full border border-white/15 text-xs",
-                active && "border-zinc-300 bg-zinc-300 text-[#111111]",
-                done && "border-zinc-300/40 bg-zinc-300/18 text-zinc-300"
+                active && "border-emerald-300 bg-emerald-300 text-[#06131a]",
+                done && "border-emerald-300/50 bg-emerald-300/18 text-emerald-200"
               )}
             >
               {done ? <Check className="h-3.5 w-3.5" /> : index + 1}
@@ -312,13 +314,13 @@ function TopProgress({ currentStep }: { currentStep: PageStep }) {
           <div
             className={cn(
               "h-0.5 rounded-full bg-white/12",
-              index <= current && "bg-zinc-300"
+              index <= current && "bg-emerald-300"
             )}
           />
           <div
             className={cn(
               "mt-2 hidden text-center text-[11px] font-bold text-white/36 sm:block",
-              index === current && "text-zinc-300"
+              index === current && "text-emerald-200"
             )}
           >
             {step.label}
@@ -349,11 +351,14 @@ function InputScreen({
   onAnalyze: () => void;
 }) {
   return (
-    <div className="mx-auto flex h-full w-full flex-1 flex-col items-stretch px-1 text-left sm:px-2 lg:px-3">
-      <h2 className="mt-2 max-w-5xl self-center text-center text-4xl font-black leading-tight tracking-normal sm:text-5xl">
+    <div className="mx-auto flex max-w-4xl flex-col items-center text-center">
+      <Badge tone="teal" className="border-emerald-300/20 bg-emerald-300/10 text-emerald-200">
+        Workflow-first estimation
+      </Badge>
+      <h2 className="mt-5 max-w-2xl text-4xl font-black leading-tight tracking-normal sm:text-5xl">
         Estimate software work for the AI era
       </h2>
-      <p className="mt-4 max-w-4xl self-center text-center text-base leading-7 text-white/62">
+      <p className="mt-4 max-w-xl text-sm leading-6 text-white/58">
         Paste a task, import context, answer the questions that matter, and turn vague work into a
         scoped estimate and execution plan.
       </p>
@@ -361,15 +366,27 @@ function InputScreen({
       <Textarea
         value={ticket}
         onChange={(event) => setTicket(event.target.value)}
-        className="mt-6 min-h-[210px] w-full border-white/16 bg-[#222222] text-left text-white placeholder:text-white/35"
-        placeholder="Suggestion: Describe one specific task (for example, “Add OAuth login with Google and GitHub, including backend callback handling, account linking, and UI error states”)."
+        className="mt-6 min-h-[140px] max-w-2xl border-white/16 bg-[#0c1b24] text-left text-white placeholder:text-white/35"
+        placeholder="Paste a Jira, Linear, GitHub, Slack, or manual task..."
       />
 
-      <div className="mt-5 grid w-full gap-3 sm:grid-cols-[1fr_auto]">
+      <div className="mt-4 flex flex-wrap justify-center gap-2">
+        {demoTasks.map((task) => (
+          <button
+            key={task.id}
+            className="rounded-full border border-white/12 bg-white/5 px-3 py-1.5 text-xs font-bold text-white/70 transition hover:border-emerald-300/40 hover:text-emerald-200"
+            onClick={() => setTicket(task.ticket)}
+          >
+            {task.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-5 grid w-full max-w-2xl gap-3 sm:grid-cols-[1fr_auto]">
         <Input
           value={githubUrl}
           onChange={(event) => setGithubUrl(event.target.value)}
-          className="border-white/16 bg-[#222222] text-white placeholder:text-white/35"
+          className="border-white/16 bg-[#0c1b24] text-white placeholder:text-white/35"
           placeholder="Optional live GitHub issue URL"
         />
         <Button variant="secondary" onClick={importGithubIssue}>
@@ -378,7 +395,7 @@ function InputScreen({
         </Button>
       </div>
 
-      <div className="mt-3 flex flex-wrap justify-center gap-2 lg:justify-start">
+      <div className="mt-3 flex flex-wrap justify-center gap-2">
         <ImportButton label="Jira" icon={Layers3} onClick={() => importPlaceholder("Jira")} />
         <ImportButton label="Linear" icon={Workflow} onClick={() => importPlaceholder("Linear")} />
         <ImportButton label="Slack" icon={MessageSquare} onClick={() => importPlaceholder("Slack")} />
@@ -387,11 +404,9 @@ function InputScreen({
 
       {importNote && <p className="mt-3 text-xs text-white/50">{importNote}</p>}
 
-      <div className="mt-auto pt-8">
-        <Button size="lg" className="min-w-56" onClick={onAnalyze}>
-          Analyze task <ArrowRight className="h-4 w-4" />
-        </Button>
-      </div>
+      <Button size="lg" className="mt-6 min-w-52" onClick={onAnalyze}>
+        Analyze task <ArrowRight className="h-4 w-4" />
+      </Button>
     </div>
   );
 }
@@ -407,7 +422,7 @@ function ImportButton({
 }) {
   return (
     <button
-      className="inline-flex items-center gap-2 rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs font-bold text-white/65 transition hover:border-zinc-300/40 hover:text-zinc-300"
+      className="inline-flex items-center gap-2 rounded-md border border-white/12 bg-white/5 px-3 py-2 text-xs font-bold text-white/65 transition hover:border-emerald-300/40 hover:text-emerald-200"
       onClick={onClick}
     >
       <Icon className="h-4 w-4" />
@@ -465,7 +480,7 @@ function ClarifyScreen({
               onChange={(event) =>
                 setAnswers((current) => ({ ...current, [field.key]: event.target.value }))
               }
-              className="mt-3 border-white/12 bg-[#222222] text-white placeholder:text-white/35"
+              className="mt-3 border-white/12 bg-[#0c1b24] text-white placeholder:text-white/35"
               placeholder={field.placeholder}
             />
           </label>
@@ -504,8 +519,8 @@ function ClarifyCard({
           <button
             key={option}
             className={cn(
-              "rounded-md border border-white/8 bg-[#222222] py-2 text-sm font-bold text-white/62 transition",
-              value === option && "border-zinc-300/45 bg-zinc-300/15 text-zinc-300"
+              "rounded-md border border-white/8 bg-[#0c1b24] py-2 text-sm font-bold text-white/62 transition",
+              value === option && "border-emerald-300/45 bg-emerald-300/15 text-emerald-200"
             )}
             onClick={() => onChange(option)}
           >
@@ -516,7 +531,7 @@ function ClarifyCard({
       <Input
         value={value && !options.includes(value) ? value : ""}
         onChange={(event) => onChange(event.target.value)}
-        className="mt-3 border-white/12 bg-[#222222] text-white placeholder:text-white/35"
+        className="mt-3 border-white/12 bg-[#0c1b24] text-white placeholder:text-white/35"
         placeholder="Optional details"
       />
     </div>
@@ -542,7 +557,7 @@ function AnalyzeScreen({ loadingStage }: { loadingStage: number }) {
                 <span
                   className={cn(
                     "flex h-8 w-8 items-center justify-center rounded-full border border-white/18 text-white/40",
-                    done && "border-zinc-300 bg-zinc-300/20 text-zinc-300"
+                    done && "border-emerald-300 bg-emerald-300/20 text-emerald-200"
                   )}
                 >
                   {done ? <Check className="h-4 w-4" /> : index + 1}
@@ -550,15 +565,15 @@ function AnalyzeScreen({ loadingStage }: { loadingStage: number }) {
                 <span className={cn("text-sm font-bold", done ? "text-white" : "text-white/42")}>
                   {stage}
                 </span>
-                {active && <Loader2 className="h-4 w-4 animate-spin text-zinc-200" />}
+                {active && <Loader2 className="h-4 w-4 animate-spin text-emerald-300" />}
               </div>
             );
           })}
         </div>
       </div>
 
-      <div className="flex min-h-[260px] items-center justify-center rounded-lg border border-zinc-300/10 bg-zinc-300/5">
-        <Brain className="h-40 w-40 text-zinc-300 drop-shadow-[0_0_35px_rgba(212,212,216,0.28)]" />
+      <div className="flex min-h-[260px] items-center justify-center rounded-lg border border-cyan-300/10 bg-cyan-300/5">
+        <Brain className="h-40 w-40 text-cyan-300 drop-shadow-[0_0_35px_rgba(34,211,238,0.35)]" />
       </div>
     </div>
   );
@@ -633,7 +648,7 @@ function ResultsScreen({
             </div>
             <div className="mt-3 h-2 rounded-full bg-white/12">
               <div
-                className="h-2 rounded-full bg-zinc-300"
+                className="h-2 rounded-full bg-emerald-300"
                 style={{ width: `${result.profile.ai_leverage === "high" ? 82 : result.profile.ai_leverage === "medium" ? 58 : 34}%` }}
               />
             </div>
@@ -696,7 +711,7 @@ function PlanScreen({
           <div className="space-y-2">
             {result.subtasks.map((subtask, index) => (
               <div key={subtask.title} className="grid gap-3 rounded-lg bg-white/5 p-3 text-sm md:grid-cols-[28px_1fr_70px_90px_120px] md:items-center">
-                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-300/15 text-xs font-black text-zinc-300">
+                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-300/15 text-xs font-black text-emerald-200">
                   {index + 1}
                 </span>
                 <div>
@@ -704,7 +719,7 @@ function PlanScreen({
                   <p className="mt-1 text-xs text-white/44">{subtask.owner}</p>
                 </div>
                 <span className="text-white/60">{subtask.estimateHours}</span>
-                <span className="text-zinc-300">{subtask.aiHelpfulness}% AI help</span>
+                <span className="text-emerald-200">{subtask.aiHelpfulness}% AI help</span>
                 <span className={cn("text-xs font-bold", subtask.criticalPath ? "text-amber-300" : "text-white/48")}>
                   {subtask.criticalPath ? "Critical path" : "Support work"}
                 </span>
@@ -718,7 +733,7 @@ function PlanScreen({
             <div className="space-y-3">
               {result.workflow.map((item, index) => (
                 <div key={item} className="flex gap-3 text-sm leading-6">
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-zinc-300/18 text-xs font-black text-zinc-300">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-300/18 text-xs font-black text-emerald-200">
                     {index + 1}
                   </span>
                   <span className="text-white/64">{item}</span>
@@ -732,7 +747,7 @@ function PlanScreen({
               {result.subtasks
                 .filter((subtask) => subtask.parallelizable)
                 .map((subtask) => (
-                  <span key={subtask.title} className="rounded-md bg-zinc-300/12 px-2.5 py-1.5 text-xs font-bold text-zinc-300">
+                  <span key={subtask.title} className="rounded-md bg-emerald-300/12 px-2.5 py-1.5 text-xs font-bold text-emerald-200">
                     {subtask.title}
                   </span>
                 ))}
@@ -745,7 +760,7 @@ function PlanScreen({
         <div className="grid gap-3 md:grid-cols-5">
           {["Scope", "Dependencies", "Build", "Review", "Release"].map((item, index) => (
             <div key={item} className="rounded-lg bg-white/5 p-4 text-center">
-              <span className="mx-auto flex h-8 w-8 items-center justify-center rounded-full bg-zinc-300/18 text-sm font-black text-zinc-300">
+              <span className="mx-auto flex h-8 w-8 items-center justify-center rounded-full bg-emerald-300/18 text-sm font-black text-emerald-200">
                 {index + 1}
               </span>
               <p className="mt-3 text-sm font-bold">{item}</p>
@@ -781,7 +796,7 @@ function OptimizeScreen({ result, onBack }: { result: AnalysisResult; onBack: ()
         <Panel title="Current plan vs optimized plan">
           <div className="grid gap-4 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
             <Metric label="Current plan" value={formatHours(result.estimation.without_ai_min_hours, result.estimation.without_ai_max_hours)} />
-            <ArrowRight className="mx-auto h-5 w-5 text-zinc-300" />
+            <ArrowRight className="mx-auto h-5 w-5 text-emerald-200" />
             <Metric label="Optimized plan" value={formatHours(result.estimation.with_ai_min_hours, result.estimation.with_ai_max_hours)} green />
           </div>
         </Panel>
@@ -857,7 +872,7 @@ function Metric({ label, value, green }: { label: string; value: string; green?:
   return (
     <div className="rounded-lg border border-white/8 bg-white/6 p-4">
       <div className="text-xs font-bold text-white/50">{label}</div>
-      <div className={cn("mt-2 text-2xl font-black tracking-normal", green ? "text-zinc-200" : "text-white")}>
+      <div className={cn("mt-2 text-2xl font-black tracking-normal", green ? "text-emerald-300" : "text-white")}>
         {value}
       </div>
     </div>
@@ -880,7 +895,7 @@ function ListPanel({
       <div className="space-y-3">
         {items.slice(0, 5).map((item) => (
           <div key={item} className="flex gap-3 text-sm leading-6 text-white/62">
-            <Icon className={cn("mt-1 h-4 w-4 shrink-0", danger ? "text-rose-300" : "text-zinc-200")} />
+            <Icon className={cn("mt-1 h-4 w-4 shrink-0", danger ? "text-rose-300" : "text-emerald-300")} />
             <span>{item}</span>
           </div>
         ))}
@@ -899,17 +914,20 @@ function FlowBar() {
   ];
 
   return (
-    <div className="mx-auto mt-10 max-w-6xl rounded-lg border border-white/10 bg-[#171717] p-5 text-white shadow-soft">
-      <div className="grid gap-4 sm:grid-cols-5">
-        {items.map(([label, Icon]) => {
-          const TypedIcon = Icon as typeof FileText;
-          return (
-            <div key={label as string} className="flex items-center justify-center gap-3 text-center sm:flex-col">
-              <TypedIcon className="h-7 w-7 text-zinc-300" />
-              <span className="text-sm font-bold text-zinc-100">{label as string}</span>
-            </div>
-          );
-        })}
+    <div className="mx-auto mt-8 max-w-5xl rounded-lg border border-slate-200 bg-white p-5 shadow-soft">
+      <div className="grid gap-4 sm:grid-cols-[140px_1fr] sm:items-center">
+        <h2 className="text-2xl font-black tracking-normal">Product Flow</h2>
+        <div className="grid gap-4 sm:grid-cols-5">
+          {items.map(([label, Icon]) => {
+            const TypedIcon = Icon as typeof FileText;
+            return (
+              <div key={label as string} className="flex items-center gap-3 sm:flex-col sm:text-center">
+                <TypedIcon className="h-7 w-7" />
+                <span className="text-sm font-bold">{label as string}</span>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

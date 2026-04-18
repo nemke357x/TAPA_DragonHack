@@ -12,12 +12,12 @@
   --border: 200 15% 86%;
   --input: 200 15% 86%;
   --ring: 173 78% 32%;
-  --primary: 0 0% 78%;
-  --primary-foreground: 220 15% 10%;
-  --accent: 0 0% 65%;
-  --accent-foreground: 220 15% 10%;
-  --warning: 0 0% 60%;
-  --success: 0 0% 70%;
+  --primary: 173 78% 32%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 346 79% 58%;
+  --accent-foreground: 0 0% 100%;
+  --warning: 38 92% 50%;
+  --success: 147 63% 38%;
 }
 
 * {
@@ -26,13 +26,13 @@
 
 html {
   scroll-behavior: smooth;
-  background: #121212;
+  background: #111317;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background: #121212;
+  background: #111317;
   color: hsl(var(--foreground));
   font-feature-settings: "rlig" 1, "calt" 1;
 }
