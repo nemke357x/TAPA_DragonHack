@@ -120,7 +120,7 @@ export async function POST(request: Request) {
         {
           role: "system",
           content:
-            "You help software teams estimate work. Return compact JSON only. Do not replace or recalculate hour estimates; the app uses deterministic final scoring with a separate repository base effort when available. Improve summaries, blockers, accelerators, and optimization guidance based on the deterministic profile, repository base estimate, repository profile, and clarification answers."
+            "You help software teams estimate work. Return compact JSON only. Do not replace or recalculate hour estimates; the app uses deterministic final scoring with a separate repository base effort when available. Improve summaries, blockers, accelerators, and optimization guidance based on the deterministic profile, repository base estimate, repository profile, and clarification answers. You must include top-level beforeOptimization and afterOptimization arrays with up to 4 short task-specific items each. Do not copy the generic deterministic beforeOptimization or afterOptimization items."
         },
         {
           role: "user",
@@ -128,6 +128,15 @@ export async function POST(request: Request) {
             analysisInput,
             clarificationQuestions,
             manualExtraContext: body.manualExtraContext ?? "",
+            requiredResponseShape: {
+              summary: "string",
+              managerSummary: "string",
+              developerSummary: "string",
+              blockers: ["up to 4 task-specific blocker strings"],
+              accelerators: ["up to 4 task-specific accelerator strings"],
+              beforeOptimization: ["up to 4 task-specific current approach strings"],
+              afterOptimization: ["up to 4 task-specific optimized approach strings"]
+            },
             deterministicResult: fallback
           })
         }
@@ -143,6 +152,14 @@ export async function POST(request: Request) {
       developerSummary: ai.developerSummary ?? fallback.developerSummary,
       blockers: Array.isArray(ai.blockers) ? ai.blockers.slice(0, 4) : fallback.blockers,
       accelerators: Array.isArray(ai.accelerators) ? ai.accelerators.slice(0, 4) : fallback.accelerators,
+      beforeOptimization: normalizeStringList(
+        ai.beforeOptimization ?? ai.before_optimization ?? ai.currentApproach,
+        fallback.beforeOptimization
+      ),
+      afterOptimization: normalizeStringList(
+        ai.afterOptimization ?? ai.after_optimization ?? ai.optimizedApproach,
+        fallback.afterOptimization
+      ),
       sources: fallback.sources.map((source) =>
         source.name === "OpenAI"
           ? { ...source, status: "connected" as const, note: "Live OpenAI analysis enhanced this result." }
@@ -182,6 +199,17 @@ const taskTypes: TaskType[] = [
 
 const levels: Level[] = ["low", "medium", "high"];
 const seniority = ["junior", "mid", "senior"] as const;
+
+function normalizeStringList(value: unknown, fallback: string[]) {
+  if (!Array.isArray(value)) return fallback;
+
+  const items = value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim().slice(0, 140))
+    .slice(0, 4);
+
+  return items.length ? items : fallback;
+}
 
 async function buildAIProfile(input: {
   client: OpenAI;

@@ -13,7 +13,6 @@ import {
   FileText,
   Github,
   History,
-  Layers3,
   Loader2,
   MessageSquare,
   Plus,
@@ -767,10 +766,6 @@ function EstimateApp() {
     }
   }
 
-  function importPlaceholder(name: string) {
-    setImportNote(`${name} import is connector-ready. Task input remains manual.`);
-  }
-
   async function saveCurrentResult() {
     if (!result) return;
     const nextHistory = await saveHistoryRecord(result);
@@ -821,7 +816,6 @@ function EstimateApp() {
                   githubUrl={githubUrl}
                   setGithubUrl={setGithubUrl}
                   importGithubRepository={importGithubRepository}
-                  importPlaceholder={importPlaceholder}
                   importNote={importNote}
                   repositoryProfile={repositoryProfile}
                   removeGithubRepository={removeGithubRepository}
@@ -874,7 +868,7 @@ function EstimateApp() {
                 <OptimizeScreen
                   result={result}
                   onBack={() => navigate("results")}
-                  onResults={() => navigate("results")}
+                  onReset={newTask}
                 />
               )}
             </section>
@@ -946,7 +940,7 @@ function TopProgress({
 
   return (
     <div className="mx-auto mb-6 w-full max-w-5xl">
-      <div className="grid grid-cols-6 gap-2">
+      <div className="grid grid-cols-5 gap-2">
         {productSteps.map((step, index) => {
           const active = index === activeIndex;
           const done = index < activeIndex;
@@ -1004,7 +998,6 @@ function InputScreen({
   githubUrl,
   setGithubUrl,
   importGithubRepository,
-  importPlaceholder,
   importNote,
   repositoryProfile,
   removeGithubRepository,
@@ -1018,7 +1011,6 @@ function InputScreen({
   githubUrl: string;
   setGithubUrl: (value: string) => void;
   importGithubRepository: () => void;
-  importPlaceholder: (name: string) => void;
   importNote: string;
   repositoryProfile: RepositoryProfile | null;
   removeGithubRepository: () => void;
@@ -1066,15 +1058,18 @@ function InputScreen({
 
       <div className="mt-6 flex flex-wrap items-center justify-center gap-2 text-xs">
         <span className="font-bold text-white/45">Try example:</span>
-        {demoTasks.slice(0, 4).map((task) => (
-          <button
-            key={task.id}
-            className="rounded-full border border-white/15 bg-white/[0.04] px-3 py-1.5 font-bold text-white/65 transition hover:border-emerald-300/50 hover:text-emerald-200"
-            onClick={() => selectExample(task.ticket)}
-          >
-            {task.label}
-          </button>
-        ))}
+        {demoTasks
+          .filter((task) => task.id !== "admin-dashboard")
+          .slice(0, 4)
+          .map((task) => (
+            <button
+              key={task.id}
+              className="rounded-full border border-white/15 bg-white/[0.04] px-3 py-1.5 font-bold text-white/65 transition hover:border-emerald-300/50 hover:text-emerald-200"
+              onClick={() => selectExample(task.ticket)}
+            >
+              {task.label}
+            </button>
+          ))}
       </div>
 
       <div className="mt-6 grid w-full max-w-2xl gap-3 sm:grid-cols-[1fr_auto]">
@@ -1090,15 +1085,8 @@ function InputScreen({
           onClick={importGithubRepository}
         >
           <Github className="h-4 w-4" />
-          Import repo context
+          Import GitHub repo
         </Button>
-      </div>
-
-      <div className="mt-3 flex flex-wrap justify-center gap-2">
-        <ImportButton label="Jira" icon={Layers3} onClick={() => importPlaceholder("Jira")} />
-        <ImportButton label="GitHub repo" icon={Github} onClick={importGithubRepository} />
-        <ImportButton label="Linear" icon={Workflow} onClick={() => importPlaceholder("Linear")} />
-        <ImportButton label="Slack" icon={MessageSquare} onClick={() => importPlaceholder("Slack")} />
       </div>
 
       {importNote && <p className="mt-3 text-xs text-white/50">{importNote}</p>}
@@ -1142,26 +1130,6 @@ function InputScreen({
         <span>Better delivery</span>
       </div>
     </div>
-  );
-}
-
-function ImportButton({
-  label,
-  icon: Icon,
-  onClick
-}: {
-  label: string;
-  icon: LucideIcon;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-bold text-white/60 transition hover:border-emerald-300/45 hover:text-emerald-200"
-      onClick={onClick}
-    >
-      <Icon className="h-4 w-4" />
-      {label}
-    </button>
   );
 }
 
@@ -1481,9 +1449,8 @@ function ResultsScreen({
           <ListPanel title="Top blockers" items={result.blockers} icon={ShieldAlert} danger />
           <ListPanel title="Top accelerators" items={result.accelerators} icon={Zap} />
           <Panel title="AI leverage">
-            <div className="flex items-center justify-between text-xs font-black text-white/60">
+            <div className="flex items-center text-xs font-black text-white/60">
               <span>{result.profile.ai_leverage} leverage</span>
-              <span>{result.estimation.time_saved_percent}%</span>
             </div>
             <div className="mt-3 h-2 rounded-full bg-white/10">
               <div
@@ -1498,7 +1465,6 @@ function ResultsScreen({
                 }}
               />
             </div>
-            <p className="mt-4 text-sm leading-6 text-white/60">{result.developerSummary}</p>
           </Panel>
         </div>
 
@@ -1525,11 +1491,11 @@ function ResultsScreen({
 function OptimizeScreen({
   result,
   onBack,
-  onResults
+  onReset
 }: {
   result: AnalysisResult;
   onBack: () => void;
-  onResults: () => void;
+  onReset: () => void;
 }) {
   return (
     <DarkFrame>
@@ -1600,9 +1566,9 @@ function OptimizeScreen({
           <Button
             variant="secondary"
             className="border-white/10 bg-white/[0.06] text-white hover:bg-white/10"
-            onClick={onResults}
+            onClick={onReset}
           >
-            Results
+            Reset
           </Button>
         </div>
       </div>
