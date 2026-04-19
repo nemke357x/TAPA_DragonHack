@@ -217,9 +217,10 @@ export function inferTaskProfile(ticket: string): TaskProfile {
 
 export function scoreTask(
   profile: TaskProfile,
-  options: { baseEstimateOverride?: SuggestedBaseEstimate | null } = {}
+  options: { baseEstimateOverride?: SuggestedBaseEstimate | null; confidenceBonus?: number } = {}
 ): Estimation {
   const base = options.baseEstimateOverride?.baseHours ?? baseHours[profile.task_type];
+  const confidenceBonus = clamp(options.confidenceBonus ?? 0, 0, 8);
   const raw =
     base *
     levelMultiplier[profile.complexity] *
@@ -240,7 +241,8 @@ export function scoreTask(
   const withMin = Math.max(1, Math.round(withoutMin * (1 - savings)));
   const withMax = Math.max(withMin + 1, Math.round(withoutMax * (1 - savings * 0.82)));
   const confidence = clamp(
-    86 -
+    86 +
+      confidenceBonus -
       (profile.ambiguity === "high" ? 18 : profile.ambiguity === "medium" ? 8 : 0) -
       (profile.blocker_probability === "high" ? 14 : profile.blocker_probability === "medium" ? 7 : 0) -
       (profile.dependencies === "high" ? 8 : 0),
@@ -259,6 +261,55 @@ export function scoreTask(
     juniorMultiplier: profile.required_seniority === "senior" ? 1.75 : 1.35,
     seniorMultiplier: profile.required_seniority === "senior" ? 0.95 : 0.82
   };
+}
+
+function confidenceBonusForAnalysis(
+  profile: TaskProfile,
+  input: AnalysisInput,
+  analysisText: string
+) {
+  let bonus = 0;
+  const text = words(analysisText);
+  const repoProfile = input.repositoryProfile;
+  const repoBase = input.repoBaseEstimate;
+
+  if (/acceptance criteria|acceptance|requirements|repro steps|steps to reproduce|definition of done/.test(text)) {
+    bonus += 2;
+  }
+
+  if (repoProfile) {
+    bonus += 2;
+  }
+
+  if (
+    repoProfile?.testingSetup.length ||
+    repoProfile?.importantFiles.some((path) => /test|spec|playwright|jest|vitest|cypress/i.test(path)) ||
+    repoProfile?.fileTree?.some((path) => /test|spec|playwright|jest|vitest|cypress/i.test(path))
+  ) {
+    bonus += 1;
+  }
+
+  if (
+    repoBase?.relevant_files.some((file) => (file.score ?? 0) >= 6) ||
+    (repoBase?.relevant_files.length ?? 0) >= 3
+  ) {
+    bonus += 2;
+  }
+
+  if (
+    ["technical documentation", "product spec", "test creation"].includes(profile.task_type) ||
+    (profile.complexity === "low" && profile.ambiguity === "low" && profile.dependencies !== "high")
+  ) {
+    bonus += 2;
+  }
+
+  if ((repoBase?.confidence_score ?? 0) >= 85) {
+    bonus += 4;
+  } else if ((repoBase?.confidence_score ?? 0) >= 70) {
+    bonus += 2;
+  }
+
+  return clamp(bonus, 0, 8);
 }
 
 export function clarificationQuestions(profile: TaskProfile, ticket = ""): ClarificationQuestion[] {
@@ -681,8 +732,10 @@ export function buildAnalysis(
     analysisInput.suggestedBaseEstimate ??
     createDefaultBaseEstimate();
   const profile = inferTaskProfile(analysisText);
+  const confidenceBonus = confidenceBonusForAnalysis(profile, analysisInput, analysisText);
   const estimation = scoreTask(profile, {
-    baseEstimateOverride: baseEstimate.baseHours ? baseEstimate : null
+    baseEstimateOverride: baseEstimate.baseHours ? baseEstimate : null,
+    confidenceBonus
   });
   const questions = clarificationQuestions(profile, analysisInput.taskText);
   const title = analysisInput.taskText.split(/[.\n]/)[0]?.replace(/^#+\s*/, "").slice(0, 86) || "Untitled task";
@@ -747,8 +800,8 @@ export function buildAnalysis(
         ? "Repository context contributed stack, tooling, architecture, and overhead signals."
         : "No repository context was imported, so the estimate uses task text and clarifications only.",
       `Multipliers adjust for complexity, ambiguity, dependencies, review load, expected output size, and coordination.`,
-    `AI changes the range only through the ai_leverage factor; the final hours are deterministic.`,
-    `Confidence decreases when ambiguity, blocker probability, or dependency load are high.`
+      `AI changes the range only through the ai_leverage factor; the final hours are deterministic.`,
+      `Confidence decreases when ambiguity, blocker probability, or dependency load are high and can increase up to 8 points for clear requirements, repository context, tests, relevant file matches, low-risk task type, or high repo-base confidence.`
     ],
     repositoryProfile: analysisInput.repositoryProfile,
     baseEstimate,
