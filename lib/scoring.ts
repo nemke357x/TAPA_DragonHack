@@ -217,10 +217,18 @@ export function inferTaskProfile(ticket: string): TaskProfile {
 
 export function scoreTask(
   profile: TaskProfile,
-  options: { baseEstimateOverride?: SuggestedBaseEstimate | null; confidenceBonus?: number } = {}
+  options: {
+    baseEstimateOverride?: SuggestedBaseEstimate | null;
+    confidenceBonus?: number;
+    dependencyConfidenceOffset?: number;
+  } = {}
 ): Estimation {
   const base = options.baseEstimateOverride?.baseHours ?? baseHours[profile.task_type];
-  const confidenceBonus = clamp(options.confidenceBonus ?? 0, 0, 8);
+  const confidenceBonus = clamp(options.confidenceBonus ?? 0, 0, 12);
+  const dependencyPenalty = Math.max(
+    0,
+    (profile.dependencies === "high" ? 8 : 0) - clamp(options.dependencyConfidenceOffset ?? 0, 0, 6)
+  );
   const raw =
     base *
     levelMultiplier[profile.complexity] *
@@ -243,9 +251,9 @@ export function scoreTask(
   const confidence = clamp(
     86 +
       confidenceBonus -
-      (profile.ambiguity === "high" ? 18 : profile.ambiguity === "medium" ? 8 : 0) -
-      (profile.blocker_probability === "high" ? 14 : profile.blocker_probability === "medium" ? 7 : 0) -
-      (profile.dependencies === "high" ? 8 : 0),
+      (profile.ambiguity === "high" ? 14 : profile.ambiguity === "medium" ? 8 : 0) -
+      (profile.blocker_probability === "high" ? 11 : profile.blocker_probability === "medium" ? 7 : 0) -
+      dependencyPenalty,
     42,
     94
   );
@@ -263,7 +271,7 @@ export function scoreTask(
   };
 }
 
-function confidenceBonusForAnalysis(
+function confidenceAdjustmentsForAnalysis(
   profile: TaskProfile,
   input: AnalysisInput,
   analysisText: string
@@ -272,8 +280,19 @@ function confidenceBonusForAnalysis(
   const text = words(analysisText);
   const repoProfile = input.repositoryProfile;
   const repoBase = input.repoBaseEstimate;
+  const answeredClarifications = Object.entries(input.clarificationAnswers ?? {}).filter(
+    ([key, value]) => key !== "Clarification questions considered" && value.trim().length > 0
+  );
 
   if (/acceptance criteria|acceptance|requirements|repro steps|steps to reproduce|definition of done/.test(text)) {
+    bonus += 2;
+  }
+
+  if (answeredClarifications.length >= 3) {
+    bonus += 5;
+  } else if (answeredClarifications.length >= 2) {
+    bonus += 4;
+  } else if (answeredClarifications.length === 1) {
     bonus += 2;
   }
 
@@ -309,7 +328,21 @@ function confidenceBonusForAnalysis(
     bonus += 2;
   }
 
-  return clamp(bonus, 0, 8);
+  const dependencyConfidenceOffset =
+    profile.dependencies === "high"
+      ? (repoBase?.confidence_score ?? 0) >= 85
+        ? 6
+        : (repoBase?.confidence_score ?? 0) >= 70
+          ? 4
+          : repoProfile
+            ? 2
+            : 0
+      : 0;
+
+  return {
+    confidenceBonus: clamp(bonus, 0, 12),
+    dependencyConfidenceOffset
+  };
 }
 
 export function clarificationQuestions(profile: TaskProfile, ticket = ""): ClarificationQuestion[] {
@@ -732,10 +765,11 @@ export function buildAnalysis(
     analysisInput.suggestedBaseEstimate ??
     createDefaultBaseEstimate();
   const profile = inferTaskProfile(analysisText);
-  const confidenceBonus = confidenceBonusForAnalysis(profile, analysisInput, analysisText);
+  const confidenceAdjustments = confidenceAdjustmentsForAnalysis(profile, analysisInput, analysisText);
   const estimation = scoreTask(profile, {
     baseEstimateOverride: baseEstimate.baseHours ? baseEstimate : null,
-    confidenceBonus
+    confidenceBonus: confidenceAdjustments.confidenceBonus,
+    dependencyConfidenceOffset: confidenceAdjustments.dependencyConfidenceOffset
   });
   const questions = clarificationQuestions(profile, analysisInput.taskText);
   const title = analysisInput.taskText.split(/[.\n]/)[0]?.replace(/^#+\s*/, "").slice(0, 86) || "Untitled task";
@@ -801,7 +835,8 @@ export function buildAnalysis(
         : "No repository context was imported, so the estimate uses task text and clarifications only.",
       `Multipliers adjust for complexity, ambiguity, dependencies, review load, expected output size, and coordination.`,
       `AI changes the range only through the ai_leverage factor; the final hours are deterministic.`,
-      `Confidence decreases when ambiguity, blocker probability, or dependency load are high and can increase up to 8 points for clear requirements, repository context, tests, relevant file matches, low-risk task type, or high repo-base confidence.`
+      `Confidence decreases when ambiguity, blocker probability, or dependency load are high and can increase up to 12 points for answered clarifications, clear requirements, repository context, tests, relevant file matches, low-risk task type, or high repo-base confidence.`,
+      `High repo-base confidence can directly reduce the dependency penalty when repository context makes the affected area clearer.`
     ],
     repositoryProfile: analysisInput.repositoryProfile,
     baseEstimate,
