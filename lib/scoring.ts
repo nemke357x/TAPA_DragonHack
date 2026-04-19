@@ -562,7 +562,7 @@ function buildSources(
     {
       name: "OpenAI",
       status: options.openAIConnected ? "connected" : "demo",
-      fields: ["scope summary", "clarifying questions", "workflow explanation"],
+      fields: ["scope summary", "clarifying questions", "estimate explanation"],
       note: options.openAIConnected
         ? "Live model path is available on the server."
         : "Demo fallback mirrors the production AI contract."
@@ -704,7 +704,7 @@ export function buildAnalysis(
     updated_at: now,
     summary: `${profile.task_type} with ${profile.complexity} complexity, ${profile.ambiguity} ambiguity, and ${profile.ai_leverage} AI leverage.`,
     developerSummary: `Start by locking acceptance criteria and the critical path. AI is most useful for scaffolding, test matrix generation, and turning imported context into implementation checklists.`,
-    managerSummary: `Plan this as a ${estimation.with_ai_min_hours}-${estimation.with_ai_max_hours} hour AI-assisted effort with ${estimation.confidence_score}% confidence. The biggest productivity gain comes from reducing ambiguity before coding starts.`,
+    managerSummary: `Estimate this as a ${estimation.with_ai_min_hours}-${estimation.with_ai_max_hours} hour AI-assisted effort with ${estimation.confidence_score}% confidence. The biggest productivity gain comes from reducing ambiguity before coding starts.`,
     profile,
     clarifyingQuestions: questions,
     answeredClarifications: analysisInput.clarificationAnswers ?? {},

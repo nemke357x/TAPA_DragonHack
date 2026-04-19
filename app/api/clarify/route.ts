@@ -59,7 +59,7 @@ export async function POST(request: Request) {
         {
           role: "system",
           content:
-            "You decide whether a software task needs clarification before estimation. Return JSON only: {\"clarificationNeeded\": boolean, \"questions\": [{\"id\":\"string\",\"question\":\"string\",\"type\":\"yes_no\"|\"short_text\"}], \"reason\":\"string\"}. Ask only questions that materially improve estimate, plan, or optimization quality. Prefer yes_no for quick binary unknowns. Use short_text when details are needed. Return 0 questions if clear enough. Never estimate hours."
+            "You decide whether a software task needs clarification before estimation. Return JSON only: {\"clarificationNeeded\": boolean, \"questions\": [{\"id\":\"string\",\"question\":\"string\",\"type\":\"yes_no\"|\"short_text\"}], \"reason\":\"string\"}. Ask only questions that materially improve estimate or optimization quality. Prefer yes_no for quick binary unknowns. Use short_text when details are needed. Return 0 questions if clear enough. Never estimate hours."
         },
         {
           role: "user",

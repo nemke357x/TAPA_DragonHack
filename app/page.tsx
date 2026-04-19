@@ -65,14 +65,13 @@ import {
 } from "@/lib/types";
 import { cn, formatHours } from "@/lib/utils";
 
-type PageStep = "input" | "clarify" | "analyze" | "results" | "plan" | "optimize";
+type PageStep = "input" | "clarify" | "analyze" | "results" | "optimize";
 
 const productSteps: { id: PageStep; label: string; short: string }[] = [
   { id: "input", label: "Input", short: "Understand" },
   { id: "clarify", label: "Clarify", short: "Clarify" },
   { id: "analyze", label: "Analyze", short: "Analyze" },
   { id: "results", label: "Results", short: "Estimate" },
-  { id: "plan", label: "Plan", short: "Plan" },
   { id: "optimize", label: "Optimize", short: "Optimize" }
 ];
 
@@ -81,7 +80,7 @@ const analyzeStages = [
   "Scanning repository context",
   "Estimating base effort from codebase",
   "Applying clarification adjustments",
-  "Building execution plan"
+  "Building optimization summary"
 ];
 
 const defaultTask = "";
@@ -452,7 +451,7 @@ function EstimateApp() {
       return;
     }
 
-    if ((activeStep === "results" || activeStep === "plan" || activeStep === "optimize") && !result) {
+    if ((activeStep === "results" || activeStep === "optimize") && !result) {
       router.replace("/?step=input");
     }
   }, [activeStep, hydrated, result, router, showHistory, taskText]);
@@ -700,7 +699,7 @@ function EstimateApp() {
       setRepoBaseEstimate(nextResult.repoBaseEstimate ?? null);
       await sleep(360);
       setLoadingStage(4);
-      setStageDetail("Building the saved execution plan, blockers, accelerators, and optimization.");
+      setStageDetail("Building the saved estimate, blockers, accelerators, and optimization.");
 
       const nextHistory = await saveHistoryRecord(nextResult);
       setHistory(nextHistory);
@@ -751,6 +750,20 @@ function EstimateApp() {
     } catch (importError) {
       setRepositoryProfile(null);
       setImportNote(importError instanceof Error ? importError.message : "GitHub repository import failed.");
+    }
+  }
+
+  function removeGithubRepository() {
+    setGithubUrl("");
+    setImportNote("Repository context removed.");
+    setRepositoryProfile(null);
+    setRepoBaseEstimate(null);
+    setQuestions([]);
+    clarificationKeyRef.current = null;
+    analysisKeyRef.current = null;
+    if (result) {
+      setResult(null);
+      setSaved(false);
     }
   }
 
@@ -811,6 +824,7 @@ function EstimateApp() {
                   importPlaceholder={importPlaceholder}
                   importNote={importNote}
                   repositoryProfile={repositoryProfile}
+                  removeGithubRepository={removeGithubRepository}
                   error={error}
                   selectExample={selectExample}
                 />
@@ -850,25 +864,16 @@ function EstimateApp() {
                 <ResultsScreen
                   result={result}
                   onBack={() => navigate("analyze")}
-                  onPlan={() => navigate("plan")}
                   onOptimize={() => navigate("optimize")}
                   onSave={saveCurrentResult}
                   saved={saved}
                 />
               )}
 
-              {activeStep === "plan" && result && (
-                <PlanScreen
-                  result={result}
-                  onBack={() => navigate("results")}
-                  onOptimize={() => navigate("optimize")}
-                />
-              )}
-
               {activeStep === "optimize" && result && (
                 <OptimizeScreen
                   result={result}
-                  onBack={() => navigate("plan")}
+                  onBack={() => navigate("results")}
                   onResults={() => navigate("results")}
                 />
               )}
@@ -1002,6 +1007,7 @@ function InputScreen({
   importPlaceholder,
   importNote,
   repositoryProfile,
+  removeGithubRepository,
   error,
   selectExample
 }: {
@@ -1015,6 +1021,7 @@ function InputScreen({
   importPlaceholder: (name: string) => void;
   importNote: string;
   repositoryProfile: RepositoryProfile | null;
+  removeGithubRepository: () => void;
   error: string;
   selectExample: (ticket: string) => void;
 }) {
@@ -1024,8 +1031,8 @@ function InputScreen({
         Estimate software work for the AI era
       </h1>
       <p className="mt-4 max-w-lg text-sm leading-6 text-white/60">
-        Paste a task, compare with and without AI, and get subtasks, blockers, and workflow
-        guidance.
+        Paste a task, compare with and without AI, and get a final estimate with blockers and
+        accelerators.
       </p>
 
       <div className="mt-6 w-full max-w-2xl">
@@ -1098,13 +1105,21 @@ function InputScreen({
 
       {repositoryProfile && (
         <div className="mt-4 w-full max-w-2xl rounded-lg border border-emerald-300/20 bg-emerald-300/8 p-3 text-left">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-black text-emerald-200">
-              {repositoryProfile.owner}/{repositoryProfile.repositoryName}
-            </span>
-            <span className="rounded-md bg-white/8 px-2 py-1 text-[11px] font-bold text-white/55">
-              {repositoryProfile.defaultBranch}
-            </span>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-black text-emerald-200">
+                {repositoryProfile.owner}/{repositoryProfile.repositoryName}
+              </span>
+              <span className="rounded-md bg-white/8 px-2 py-1 text-[11px] font-bold text-white/55">
+                {repositoryProfile.defaultBranch}
+              </span>
+            </div>
+            <button
+              className="rounded-md border border-white/10 bg-white/[0.05] px-3 py-1.5 text-[11px] font-black text-white/60 transition hover:border-rose-300/45 hover:text-rose-200"
+              onClick={removeGithubRepository}
+            >
+              Remove repo
+            </button>
           </div>
           <p className="mt-2 text-xs leading-5 text-white/58">{repositoryProfile.repoSummary}</p>
           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1122,7 +1137,7 @@ function InputScreen({
       <div className="mt-8 flex flex-wrap justify-center gap-4 text-[11px] font-bold text-white/40">
         <span>AI-powered estimation</span>
         <span>•</span>
-        <span>Smarter planning</span>
+        <span>Smarter estimates</span>
         <span>•</span>
         <span>Better delivery</span>
       </div>
@@ -1178,7 +1193,7 @@ function ClarifyScreen({
           <h2 className="text-2xl font-black tracking-normal">AI context check</h2>
           <p className="mt-2 text-xs font-bold text-white/50">
             Answer only what you know. These details are optional, but they can sharpen the
-            estimate and plan.
+            estimate.
           </p>
           {reason && <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-emerald-200/80">{reason}</p>}
         </div>
@@ -1388,14 +1403,12 @@ function AnalyzeScreen({
 function ResultsScreen({
   result,
   onBack,
-  onPlan,
   onOptimize,
   onSave,
   saved
 }: {
   result: AnalysisResult;
   onBack: () => void;
-  onPlan: () => void;
   onOptimize: () => void;
   onSave: () => void;
   saved: boolean;
@@ -1429,99 +1442,39 @@ function ResultsScreen({
           </div>
         </div>
 
-        {result.repoBaseEstimate && (
-          <div className="grid gap-3 lg:grid-cols-[1fr_1fr]">
-            <Panel title="Base effort from codebase">
-              <div className="grid gap-3 sm:grid-cols-3">
-                <Metric
-                  label="Repo base"
-                  value={formatHours(
-                    result.repoBaseEstimate.base_effort.min_hours,
-                    result.repoBaseEstimate.base_effort.max_hours
-                  )}
-                />
-                <Metric
-                  label="Repo confidence"
-                  value={`${result.repoBaseEstimate.confidence_score}%`}
-                />
-                <Metric
-                  label="Relevant files"
-                  value={`${result.repoBaseEstimate.relevant_files.length}`}
-                />
-              </div>
-              <p className="mt-4 text-sm leading-6 text-white/60">
-                {result.repoBaseEstimate.repo_summary}
-              </p>
-            </Panel>
-
-            <Panel title="Final estimate after clarification">
-              <div className="grid gap-3 sm:grid-cols-3">
-                <Metric
-                  label="Without AI"
-                  value={formatHours(
-                    result.estimation.without_ai_min_hours,
-                    result.estimation.without_ai_max_hours
-                  )}
-                />
-                <Metric
-                  label="With AI"
-                  value={formatHours(
-                    result.estimation.with_ai_min_hours,
-                    result.estimation.with_ai_max_hours
-                  )}
-                  green
-                />
-                <Metric label="Saved" value={`${result.estimation.time_saved_percent}%`} green />
-              </div>
-              <p className="mt-4 text-sm leading-6 text-white/60">
-                Clarification answers and the current deterministic scoring engine adjust the
-                codebase base effort into the final estimate.
-              </p>
-            </Panel>
-          </div>
-        )}
-
-        <div className="grid gap-3 md:grid-cols-4">
-          <Metric
-            label={result.repoBaseEstimate ? "Final without AI" : "Without AI"}
-            value={formatHours(
-              result.estimation.without_ai_min_hours,
-              result.estimation.without_ai_max_hours
-            )}
-          />
-          <Metric
-            label={result.repoBaseEstimate ? "Final with AI" : "With AI"}
-            value={formatHours(
-              result.estimation.with_ai_min_hours,
-              result.estimation.with_ai_max_hours
-            )}
-          />
-          <Metric label="Time saved" value={`${result.estimation.time_saved_percent}%`} green />
-          <Metric label="Confidence" value={`${result.estimation.confidence_score}%`} />
-        </div>
-
-        {result.repoBaseEstimate && (
-          <div className="grid gap-4 lg:grid-cols-3">
-            <ListPanel
-              title="Likely impacted areas"
-              items={result.repoBaseEstimate.likely_impacted_areas.map(
-                (area) => `${area.area}: ${area.estimated_share_percent}% - ${area.reason}`
+        <Panel title="Final calculated estimate">
+          <div className="grid gap-3 md:grid-cols-4">
+            <Metric
+              label="Final with AI"
+              value={formatHours(
+                result.estimation.with_ai_min_hours,
+                result.estimation.with_ai_max_hours
               )}
-              icon={Workflow}
+              green
             />
-            <ListPanel
-              title="Reuse opportunities"
-              items={result.repoBaseEstimate.existing_reuse_opportunities}
-              icon={CheckCircle2}
+            <Metric
+              label="Without AI"
+              value={formatHours(
+                result.estimation.without_ai_min_hours,
+                result.estimation.without_ai_max_hours
+              )}
             />
-            <ListPanel
-              title="Repository risks"
-              items={result.repoBaseEstimate.repo_risks}
-              icon={ShieldAlert}
-              danger
-            />
+            <Metric label="Time saved" value={`${result.estimation.time_saved_percent}%`} green />
+            <Metric label="Confidence" value={`${result.estimation.confidence_score}%`} />
           </div>
-        )}
+          <p className="mt-4 text-sm leading-6 text-white/60">
+            This is the final calculated range for the task using the current inputs.
+          </p>
+        </Panel>
+
+        <div className="grid gap-3 md:grid-cols-3">
+          <Metric
+            label="Complexity"
+            value={result.profile.complexity}
+          />
+          <Metric label="Ambiguity" value={result.profile.ambiguity} />
+          <Metric label="AI leverage" value={result.profile.ai_leverage} green />
+        </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
           <ListPanel title="Why this estimate" items={result.explanation} icon={FileText} />
@@ -1562,86 +1515,7 @@ function ResultsScreen({
             >
               Optimize
             </Button>
-            <Button className="bg-emerald-400 text-[#041014] hover:bg-emerald-300" onClick={onPlan}>
-              Plan <ArrowRight className="h-4 w-4" />
-            </Button>
           </div>
-        </div>
-      </div>
-    </DarkFrame>
-  );
-}
-
-function PlanScreen({
-  result,
-  onBack,
-  onOptimize
-}: {
-  result: AnalysisResult;
-  onBack: () => void;
-  onOptimize: () => void;
-}) {
-  return (
-    <DarkFrame>
-      <div className="space-y-5">
-        <h2 className="text-2xl font-black tracking-normal">Subtasks & execution plan</h2>
-
-        <div className="grid gap-4 lg:grid-cols-[1.25fr_1fr]">
-          <Panel title="Subtasks">
-            <div className="space-y-4">
-              {result.plan.subtasks.map((subtask, index) => (
-                <div
-                  key={subtask.title}
-                  className="grid gap-3 text-sm sm:grid-cols-[28px_1fr_56px_72px_84px] sm:items-center"
-                >
-                  <span className="font-black text-white/70">{index + 1}.</span>
-                  <div>
-                    <p className="font-black text-white/90">{subtask.title}</p>
-                    <p className="mt-1 text-xs text-white/40">{subtask.owner}</p>
-                  </div>
-                  <span className="font-bold text-white/60">{subtask.sharePercent}%</span>
-                  <Tag tone={subtask.aiHelpfulnessTag}>{subtask.aiHelpfulnessTag}</Tag>
-                  <Tag tone={subtask.priority}>{subtask.priority}</Tag>
-                </div>
-              ))}
-            </div>
-          </Panel>
-
-          <Panel title="Execution order">
-            <div className="space-y-4">
-              {result.plan.execution_order.map((item, index) => (
-                <div key={item} className="flex gap-3 text-sm leading-6">
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-300/20 text-xs font-black text-emerald-200">
-                    {index + 1}
-                  </span>
-                  <span className="text-white/60">{item}</span>
-                </div>
-              ))}
-            </div>
-          </Panel>
-        </div>
-
-        <Panel title="Parallelizable">
-          <div className="flex flex-wrap gap-2">
-            {result.plan.parallelizable_groups.flat().map((item, index) => (
-              <span
-                key={`${item}-${index}`}
-                className="rounded-md border border-emerald-300/15 bg-emerald-300/10 px-3 py-2 text-xs font-black text-emerald-200"
-              >
-                {index + 1} {item}
-              </span>
-            ))}
-          </div>
-        </Panel>
-
-        <div className="flex items-center justify-between gap-3">
-          <Button variant="ghost" className="text-white/70 hover:bg-white/10" onClick={onBack}>
-            <ArrowLeft className="h-4 w-4" />
-            Back
-          </Button>
-          <Button className="bg-emerald-400 text-[#041014] hover:bg-emerald-300" onClick={onOptimize}>
-            Optimize <ArrowRight className="h-4 w-4" />
-          </Button>
         </div>
       </div>
     </DarkFrame>
@@ -1666,7 +1540,7 @@ function OptimizeScreen({
           <Panel title="Optimization insights">
             <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
               <Metric
-                label="Current plan"
+                label="Current estimate"
                 value={formatHours(
                   result.optimization.current_plan_estimate.min_hours,
                   result.optimization.current_plan_estimate.max_hours
@@ -1674,7 +1548,7 @@ function OptimizeScreen({
               />
               <ArrowRight className="mx-auto h-5 w-5 text-emerald-200" />
               <Metric
-                label="Optimized plan"
+                label="Optimized estimate"
                 value={formatHours(
                   result.optimization.optimized_plan_estimate.min_hours,
                   result.optimization.optimized_plan_estimate.max_hours
@@ -1714,8 +1588,8 @@ function OptimizeScreen({
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          <ListPanel title="Current plan" items={result.beforeOptimization} icon={Split} />
-          <ListPanel title="Optimized plan" items={result.afterOptimization} icon={Workflow} />
+          <ListPanel title="Current approach" items={result.beforeOptimization} icon={Split} />
+          <ListPanel title="Optimized approach" items={result.afterOptimization} icon={Workflow} />
         </div>
 
         <div className="flex items-center justify-between gap-3">
@@ -1860,12 +1734,6 @@ function HistoryScreen({
                     <div className="mt-3 flex gap-2">
                       <SmallLinkButton onClick={(event) => {
                         event.stopPropagation();
-                        onOpenRecord(record, "plan");
-                      }}>
-                        Plan
-                      </SmallLinkButton>
-                      <SmallLinkButton onClick={(event) => {
-                        event.stopPropagation();
                         onOpenRecord(record, "optimize");
                       }}>
                         Optimize
@@ -1999,20 +1867,6 @@ function ListPanel({
         ))}
       </div>
     </Panel>
-  );
-}
-
-function Tag({ tone, children }: { tone: "Low" | "Medium" | "High"; children: ReactNode }) {
-  const classes = {
-    Low: "border-white/10 bg-white/[0.05] text-white/50",
-    Medium: "border-amber-300/20 bg-amber-300/10 text-amber-200",
-    High: "border-emerald-300/20 bg-emerald-300/10 text-emerald-200"
-  };
-
-  return (
-    <span className={cn("w-fit rounded-md border px-2 py-1 text-[11px] font-black", classes[tone])}>
-      {children}
-    </span>
   );
 }
 

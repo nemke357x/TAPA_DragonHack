@@ -101,7 +101,7 @@ export async function POST(request: Request) {
         {
           role: "system",
           content:
-            "You help software teams plan work. Return compact JSON only. Do not replace or recalculate hour estimates; the app uses deterministic final scoring with a separate repository base effort when available. Improve summaries, blockers, accelerators, workflow, and subtask guidance based on the deterministic profile, repository base estimate, repository profile, and clarification answers."
+            "You help software teams estimate work. Return compact JSON only. Do not replace or recalculate hour estimates; the app uses deterministic final scoring with a separate repository base effort when available. Improve summaries, blockers, accelerators, and optimization guidance based on the deterministic profile, repository base estimate, repository profile, and clarification answers."
         },
         {
           role: "user",
@@ -117,7 +117,6 @@ export async function POST(request: Request) {
 
     const content = completion.choices[0]?.message.content;
     const ai = content ? JSON.parse(content) : {};
-    const nextWorkflow = Array.isArray(ai.workflow) ? ai.workflow.slice(0, 6) : fallback.workflow;
     const result = {
       ...fallback,
       summary: ai.summary ?? fallback.summary,
@@ -125,11 +124,6 @@ export async function POST(request: Request) {
       developerSummary: ai.developerSummary ?? fallback.developerSummary,
       blockers: Array.isArray(ai.blockers) ? ai.blockers.slice(0, 4) : fallback.blockers,
       accelerators: Array.isArray(ai.accelerators) ? ai.accelerators.slice(0, 4) : fallback.accelerators,
-      workflow: nextWorkflow,
-      plan: {
-        ...fallback.plan,
-        execution_order: nextWorkflow
-      },
       sources: fallback.sources.map((source) =>
         source.name === "OpenAI"
           ? { ...source, status: "connected" as const, note: "Live OpenAI analysis enhanced this result." }
