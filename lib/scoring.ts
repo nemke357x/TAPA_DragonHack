@@ -249,6 +249,8 @@ export function scoreTask(
   const withoutMax = Math.max(withoutMin + 1, Math.round(raw * (1 + uncertainty)));
   const withMin = Math.max(1, Math.round(withoutMin * (1 - savings)));
   const withMax = Math.max(withMin + 1, Math.round(withoutMax * (1 - savings * 0.82)));
+  const withoutRange = shrinkRange(withoutMin, withoutMax, 0.3);
+  const withRange = shrinkRange(withMin, withMax, 0.3);
   const confidence = clamp(
     86 +
       confidenceBonus -
@@ -260,11 +262,11 @@ export function scoreTask(
   );
 
   return {
-    without_ai_min_hours: withoutMin,
-    without_ai_max_hours: withoutMax,
-    with_ai_min_hours: withMin,
-    with_ai_max_hours: withMax,
-    time_saved_percent: Math.round(((withoutMax - withMax) / withoutMax) * 100),
+    without_ai_min_hours: withoutRange.min,
+    without_ai_max_hours: withoutRange.max,
+    with_ai_min_hours: withRange.min,
+    with_ai_max_hours: withRange.max,
+    time_saved_percent: Math.round(((withoutRange.max - withRange.max) / withoutRange.max) * 100),
     confidence_score: confidence,
     delay_risk: clamp(100 - confidence + (profile.coordination_load === "high" ? 12 : 4), 12, 84),
     juniorMultiplier: profile.required_seniority === "senior" ? 1.75 : 1.35,
@@ -344,6 +346,16 @@ function confidenceAdjustmentsForAnalysis(
     confidenceBonus: clamp(bonus, 0, 12),
     dependencyConfidenceOffset
   };
+}
+
+function shrinkRange(min: number, max: number, shrinkPercent: number) {
+  const midpoint = (min + max) / 2;
+  const halfWidth = Math.max(0.5, (max - min) / 2);
+  const nextHalfWidth = halfWidth * (1 - shrinkPercent);
+  const nextMin = Math.max(1, Math.round(midpoint - nextHalfWidth));
+  const nextMax = Math.max(nextMin + 1, Math.round(midpoint + nextHalfWidth));
+
+  return { min: nextMin, max: nextMax };
 }
 
 export function clarificationQuestions(profile: TaskProfile, ticket = ""): ClarificationQuestion[] {
