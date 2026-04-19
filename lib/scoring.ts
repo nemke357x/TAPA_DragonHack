@@ -13,6 +13,7 @@ import {
   Subtask,
   SuggestedBaseEstimate,
   TaskProfile,
+  TaskProfileReasoning,
   TaskType
 } from "@/lib/types";
 import { buildAnalysisText, createDefaultBaseEstimate } from "@/lib/analysis-input";
@@ -746,6 +747,8 @@ type BuildAnalysisOptions = {
   id?: string;
   created_at?: string;
   baseEstimateOverride?: SuggestedBaseEstimate | null;
+  profileOverride?: TaskProfile | null;
+  profileReasoning?: TaskProfileReasoning;
   openAIConnected?: boolean;
   supabaseConnected?: boolean;
 };
@@ -764,7 +767,8 @@ export function buildAnalysis(
     options.baseEstimateOverride ??
     analysisInput.suggestedBaseEstimate ??
     createDefaultBaseEstimate();
-  const profile = inferTaskProfile(analysisText);
+  const profile = options.profileOverride ?? inferTaskProfile(analysisText);
+  const profileReasoning = options.profileReasoning ?? analysisInput.profileReasoning;
   const confidenceAdjustments = confidenceAdjustmentsForAnalysis(profile, analysisInput, analysisText);
   const estimation = scoreTask(profile, {
     baseEstimateOverride: baseEstimate.baseHours ? baseEstimate : null,
@@ -833,6 +837,7 @@ export function buildAnalysis(
       analysisInput.repositoryProfile
         ? "Repository context contributed stack, tooling, architecture, and overhead signals."
         : "No repository context was imported, so the estimate uses task text and clarifications only.",
+      ...profileReasoningToExplanation(profileReasoning),
       `Multipliers adjust for complexity, ambiguity, dependencies, review load, expected output size, and coordination.`,
       `AI changes the range only through the ai_leverage factor; the final hours are deterministic.`,
       `Confidence decreases when ambiguity, blocker probability, or dependency load are high and can increase up to 12 points for answered clarifications, clear requirements, repository context, tests, relevant file matches, low-risk task type, or high repo-base confidence.`,
@@ -840,6 +845,21 @@ export function buildAnalysis(
     ],
     repositoryProfile: analysisInput.repositoryProfile,
     baseEstimate,
-    repoBaseEstimate: analysisInput.repoBaseEstimate
+    repoBaseEstimate: analysisInput.repoBaseEstimate,
+    profileReasoning
   };
+}
+
+function profileReasoningToExplanation(reasoning?: TaskProfileReasoning) {
+  if (!reasoning) return [];
+
+  return [
+    reasoning.complexity ? `Complexity: ${reasoning.complexity}` : "",
+    reasoning.ambiguity ? `Ambiguity: ${reasoning.ambiguity}` : "",
+    reasoning.dependencies ? `Dependencies: ${reasoning.dependencies}` : "",
+    reasoning.review_load ? `Review load: ${reasoning.review_load}` : "",
+    reasoning.blocker_probability ? `Blocker probability: ${reasoning.blocker_probability}` : "",
+    reasoning.coordination_load ? `Coordination load: ${reasoning.coordination_load}` : "",
+    reasoning.expected_output_size ? `Expected output size: ${reasoning.expected_output_size}` : ""
+  ].filter(Boolean);
 }

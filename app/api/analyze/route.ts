@@ -1,13 +1,19 @@
 import { NextResponse } from "next/server";
+import OpenAI from "openai";
+import { buildAnalysisText } from "@/lib/analysis-input";
 import { repoBaseToSuggestedEstimate } from "@/lib/final-estimator";
 import { describeOpenAIError, getOpenAIClient, getOpenAIModel } from "@/lib/openai-server";
 import { estimateRepoBaseEffort } from "@/lib/repo-base-estimator";
-import { buildAnalysis } from "@/lib/scoring";
+import { buildAnalysis, inferTaskProfile } from "@/lib/scoring";
 import {
   AnalysisInput,
   ClarificationQuestion,
+  Level,
   RepoBaseEffortEstimate,
-  RepositoryProfile
+  RepositoryProfile,
+  TaskProfile,
+  TaskProfileReasoning,
+  TaskType
 } from "@/lib/types";
 
 export async function POST(request: Request) {
@@ -63,10 +69,21 @@ export async function POST(request: Request) {
     suggestedBaseEstimate: suggestedBaseEstimate ?? undefined,
     estimateSource: suggestedBaseEstimate?.baseEstimateSource ?? "deterministic-default"
   };
+  const deterministicProfile = inferTaskProfile(buildAnalysisText(analysisInput));
+  const aiProfileResult = client
+    ? await buildAIProfile({
+        client,
+        analysisInput,
+        clarificationQuestions,
+        manualExtraContext: body.manualExtraContext ?? "",
+        deterministicProfile
+      }).catch(() => null)
+    : null;
   const fallback = buildAnalysis(
     {
       ...analysisInput,
-      suggestedBaseEstimate: suggestedBaseEstimate ?? undefined
+      suggestedBaseEstimate: suggestedBaseEstimate ?? undefined,
+      profileReasoning: aiProfileResult?.reasoning
     },
     {},
     {
@@ -76,7 +93,9 @@ export async function POST(request: Request) {
       supabaseConnected: Boolean(
         process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
       ),
-      baseEstimateOverride: suggestedBaseEstimate
+      baseEstimateOverride: suggestedBaseEstimate,
+      profileOverride: aiProfileResult?.profile,
+      profileReasoning: aiProfileResult?.reasoning
     }
   );
   fallback.clarifyingQuestions =
@@ -146,4 +165,144 @@ export async function POST(request: Request) {
       warning: describeOpenAIError(error)
     });
   }
+}
+
+const taskTypes: TaskType[] = [
+  "frontend feature",
+  "backend feature",
+  "bug fix",
+  "API integration",
+  "auth flow",
+  "technical documentation",
+  "performance optimization",
+  "test creation",
+  "product spec",
+  "research summary"
+];
+
+const levels: Level[] = ["low", "medium", "high"];
+const seniority = ["junior", "mid", "senior"] as const;
+
+async function buildAIProfile(input: {
+  client: OpenAI;
+  analysisInput: AnalysisInput;
+  clarificationQuestions: ClarificationQuestion[];
+  manualExtraContext: string;
+  deterministicProfile: TaskProfile;
+}): Promise<{ profile: TaskProfile; reasoning: TaskProfileReasoning } | null> {
+  const completion = await input.client.chat.completions.create({
+    model: getOpenAIModel(),
+    temperature: 0.1,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content:
+          "You classify software estimation inputs into a structured profile. Return JSON only. Do not estimate hours and do not provide final ranges. Choose only allowed enum values. The deterministic app scorer will calculate final hours from your profile."
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          allowedValues: {
+            task_type: taskTypes,
+            levels,
+            required_seniority: seniority
+          },
+          requiredResponse: {
+            profile: {
+              task_type: "frontend feature",
+              complexity: "low|medium|high",
+              ambiguity: "low|medium|high",
+              dependencies: "low|medium|high",
+              review_load: "low|medium|high",
+              research_load: "low|medium|high",
+              ai_leverage: "low|medium|high",
+              expected_output_size: "low|medium|high",
+              required_seniority: "junior|mid|senior",
+              iteration_risk: "low|medium|high",
+              coordination_load: "low|medium|high",
+              blocker_probability: "low|medium|high"
+            },
+            reasoning: {
+              complexity: "brief reason",
+              ambiguity: "brief reason",
+              dependencies: "brief reason",
+              review_load: "brief reason",
+              blocker_probability: "brief reason",
+              coordination_load: "brief reason",
+              expected_output_size: "brief reason"
+            }
+          },
+          guidance: [
+            "Use task text, repository context, clarification answers, and manual additional info together.",
+            "Mark ambiguity low only when acceptance criteria, implementation target, and expected behavior are concrete.",
+            "Mark dependencies high when external APIs, backend contracts, approvals, permissions, data migrations, or cross-team handoffs may block progress.",
+            "Mark review_load high for auth, payment, permissions, security, migrations, enterprise workflows, or risky production paths.",
+            "Mark blocker_probability high when reproduction, root cause, third-party behavior, production data, or ownership is unclear.",
+            "Mark expected_output_size high when the work spans multiple surfaces, migrations, exports, dashboards, tests, or large data flows.",
+            "AI leverage should reflect how much generative AI can realistically reduce implementation time, not whether AI can understand the task."
+          ],
+          analysisInput: input.analysisInput,
+          clarificationQuestions: input.clarificationQuestions,
+          manualExtraContext: input.manualExtraContext,
+          deterministicFallbackProfile: input.deterministicProfile
+        })
+      }
+    ]
+  });
+
+  const content = completion.choices[0]?.message.content;
+  if (!content) return null;
+
+  return normalizeAIProfile(JSON.parse(content), input.deterministicProfile);
+}
+
+function normalizeAIProfile(
+  value: unknown,
+  fallback: TaskProfile
+): { profile: TaskProfile; reasoning: TaskProfileReasoning } | null {
+  if (!value || typeof value !== "object") return null;
+
+  const source = value as {
+    profile?: Partial<TaskProfile>;
+    reasoning?: TaskProfileReasoning;
+  };
+  const profile = source.profile;
+  if (!profile || typeof profile !== "object") return null;
+
+  return {
+    profile: {
+      task_type: taskTypes.includes(profile.task_type as TaskType)
+        ? (profile.task_type as TaskType)
+        : fallback.task_type,
+      complexity: normalizeLevel(profile.complexity, fallback.complexity),
+      ambiguity: normalizeLevel(profile.ambiguity, fallback.ambiguity),
+      dependencies: normalizeLevel(profile.dependencies, fallback.dependencies),
+      review_load: normalizeLevel(profile.review_load, fallback.review_load),
+      research_load: normalizeLevel(profile.research_load, fallback.research_load),
+      ai_leverage: normalizeLevel(profile.ai_leverage, fallback.ai_leverage),
+      expected_output_size: normalizeLevel(profile.expected_output_size, fallback.expected_output_size),
+      required_seniority: seniority.includes(profile.required_seniority as (typeof seniority)[number])
+        ? (profile.required_seniority as TaskProfile["required_seniority"])
+        : fallback.required_seniority,
+      iteration_risk: normalizeLevel(profile.iteration_risk, fallback.iteration_risk),
+      coordination_load: normalizeLevel(profile.coordination_load, fallback.coordination_load),
+      blocker_probability: normalizeLevel(profile.blocker_probability, fallback.blocker_probability)
+    },
+    reasoning: normalizeReasoning(source.reasoning)
+  };
+}
+
+function normalizeLevel(value: unknown, fallback: Level): Level {
+  return levels.includes(value as Level) ? (value as Level) : fallback;
+}
+
+function normalizeReasoning(value: TaskProfileReasoning | undefined): TaskProfileReasoning {
+  if (!value || typeof value !== "object") return {};
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, reason]) => typeof reason === "string" && reason.trim())
+      .map(([key, reason]) => [key, reason.slice(0, 220)])
+  ) as TaskProfileReasoning;
 }

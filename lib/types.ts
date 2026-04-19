@@ -41,6 +41,8 @@ export type TaskProfile = {
   blocker_probability: Level;
 };
 
+export type TaskProfileReasoning = Partial<Record<keyof TaskProfile, string>>;
+
 export type Source = {
   name: "Manual" | "OpenAI" | "GitHub" | "Jira" | "Linear" | "Supabase" | "Slack" | "Calendar";
   status: "connected" | "demo" | "ready" | "missing";
@@ -197,6 +199,7 @@ export type AnalysisInput = {
   suggestedBaseEstimate?: SuggestedBaseEstimate;
   repoBaseEstimate?: RepoBaseEffortEstimate;
   estimateSource?: BaseEstimateSource;
+  profileReasoning?: TaskProfileReasoning;
 };
 
 export type AnalysisResult = {
@@ -226,6 +229,7 @@ export type AnalysisResult = {
   repositoryProfile?: RepositoryProfile;
   baseEstimate?: SuggestedBaseEstimate;
   repoBaseEstimate?: RepoBaseEffortEstimate;
+  profileReasoning?: TaskProfileReasoning;
 };
 
 export type ExecutionPlan = {
