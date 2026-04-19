@@ -33,6 +33,7 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Legend,
   Line,
   LineChart,
   Pie,
@@ -889,7 +890,7 @@ function AppHeader({
   historyCount: number;
 }) {
   return (
-    <header className="mb-4 flex items-center justify-between gap-3 border-b border-white/10 pb-4">
+    <header className="relative mb-4 flex items-center justify-between gap-3 border-b border-white/10 pb-4">
       <button className="flex items-center gap-2 text-left" onClick={onNewTask}>
         <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-300/25 bg-emerald-300/10">
           <Sparkles className="h-4 w-4 text-emerald-300" />
@@ -897,7 +898,7 @@ function AppHeader({
         <span className="font-black text-emerald-300">EstiMate AI</span>
       </button>
 
-      <nav className="hidden items-center gap-6 text-xs font-bold text-white/60 md:flex">
+      <nav className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-6 text-xs font-bold text-white/60 md:flex">
         <span>How it works</span>
         <span>Integrations</span>
         <span>Pricing</span>
@@ -1660,10 +1661,18 @@ function HistoryScreen({
             ) : (
               <div className="max-h-[560px] space-y-2 overflow-auto pr-1">
                 {history.map((record) => (
-                  <button
+                  <div
                     key={record.id}
-                    className="w-full rounded-lg border border-white/10 bg-white/[0.045] p-3 text-left transition hover:border-emerald-300/35 hover:bg-white/[0.07]"
+                    role="button"
+                    tabIndex={0}
+                    className="w-full cursor-pointer rounded-lg border border-white/10 bg-white/[0.045] p-3 text-left transition hover:border-emerald-300/35 hover:bg-white/[0.07]"
                     onClick={() => onOpenRecord(record, "results")}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onOpenRecord(record, "results");
+                      }
+                    }}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
@@ -1705,7 +1714,7 @@ function HistoryScreen({
                         Optimize
                       </SmallLinkButton>
                     </div>
-                  </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -1748,6 +1757,7 @@ function HistoryScreen({
                       ))}
                     </Pie>
                     <Tooltip contentStyle={tooltipStyle} />
+                    <Legend wrapperStyle={legendStyle} />
                   </PieChart>
                 </ChartWrap>
               </Panel>
@@ -1874,6 +1884,12 @@ function ChartWrap({ children, small }: { children: ReactElement; small?: boolea
 
 const chartTick = {
   fill: "rgba(255,255,255,0.55)",
+  fontSize: 11,
+  fontWeight: 700
+};
+
+const legendStyle = {
+  color: "rgba(255,255,255,0.82)",
   fontSize: 11,
   fontWeight: 700
 };
