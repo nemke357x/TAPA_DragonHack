@@ -91,6 +91,8 @@ export type RepositoryProfile = {
   architectureNotes: string[];
   topLevelStructure: string[];
   importantFiles: string[];
+  fileTree?: string[];
+  sampledFiles?: RepositoryFileContext[];
   complexitySignals: string[];
   implementationOverheadHints: string[];
   repoSummary: string;
@@ -98,7 +100,41 @@ export type RepositoryProfile = {
   sourceUrl: string;
 };
 
-export type BaseEstimateSource = "deterministic-default" | "ai-suggested" | "manual-override";
+export type RepositoryFileContext = {
+  path: string;
+  content?: string;
+  summary?: string;
+  reason?: string;
+  score?: number;
+};
+
+export type RepositoryContextBundle = {
+  repository: {
+    owner: string;
+    name: string;
+    defaultBranch: string;
+    sourceUrl: string;
+  };
+  taskText: string;
+  repoSummary: string;
+  frameworks: string[];
+  languages: string[];
+  packageManager?: string;
+  topLevelStructure: string[];
+  rankedFiles: RepositoryFileContext[];
+  manifestFiles: RepositoryFileContext[];
+  architectureSignals: string[];
+  complexitySignals: string[];
+  reuseSignals: string[];
+  riskSignals: string[];
+  retrievalNotes: string[];
+};
+
+export type BaseEstimateSource =
+  | "deterministic-default"
+  | "repo-fallback"
+  | "ai-suggested"
+  | "manual-override";
 
 export type SuggestedBaseEstimate = {
   baseHours?: number;
@@ -108,11 +144,58 @@ export type SuggestedBaseEstimate = {
   reasoning?: string[];
 };
 
+export type RepoImpactArea =
+  | "frontend"
+  | "backend"
+  | "database"
+  | "auth"
+  | "notifications"
+  | "analytics"
+  | "tests"
+  | "jobs"
+  | "config";
+
+export type RepoBaseEffortRange = {
+  min: number;
+  max: number;
+};
+
+export type RepoBaseEffortEstimate = {
+  task_title: string;
+  repo_summary: string;
+  likely_impacted_areas: Array<{
+    area: RepoImpactArea;
+    reason: string;
+    estimated_share_percent: number;
+  }>;
+  base_effort: {
+    min_hours: number;
+    max_hours: number;
+  };
+  base_effort_breakdown: {
+    frontend_hours: RepoBaseEffortRange;
+    backend_hours: RepoBaseEffortRange;
+    database_hours: RepoBaseEffortRange;
+    testing_hours: RepoBaseEffortRange;
+    integration_hours: RepoBaseEffortRange;
+  };
+  repo_complexity_signals: string[];
+  existing_reuse_opportunities: string[];
+  repo_risks: string[];
+  confidence_score: number;
+  assumptions: string[];
+  recommended_clarify_questions: string[];
+  relevant_files: RepositoryFileContext[];
+  retrieval_notes: string[];
+  mode: "live" | "fallback" | "demo";
+};
+
 export type AnalysisInput = {
   taskText: string;
   clarificationAnswers?: Record<string, string>;
   repositoryProfile?: RepositoryProfile;
   suggestedBaseEstimate?: SuggestedBaseEstimate;
+  repoBaseEstimate?: RepoBaseEffortEstimate;
   estimateSource?: BaseEstimateSource;
 };
 
@@ -142,6 +225,7 @@ export type AnalysisResult = {
   explanation: string[];
   repositoryProfile?: RepositoryProfile;
   baseEstimate?: SuggestedBaseEstimate;
+  repoBaseEstimate?: RepoBaseEffortEstimate;
 };
 
 export type ExecutionPlan = {
@@ -175,6 +259,7 @@ export type TaskDraft = {
   githubUrl?: string;
   importNote?: string;
   repositoryProfile?: RepositoryProfile | null;
+  repoBaseEstimate?: RepoBaseEffortEstimate | null;
   updated_at: string;
 };
 

@@ -740,15 +740,18 @@ export function buildAnalysis(
       "Manager sees confidence, delay risk, and AI leverage"
     ],
     explanation: [
-      `Base estimate comes from task type: ${profile.task_type}.`,
+      analysisInput.repoBaseEstimate
+        ? `Base effort from codebase analysis is ${analysisInput.repoBaseEstimate.base_effort.min_hours}-${analysisInput.repoBaseEstimate.base_effort.max_hours} hours before clarification modifiers.`
+        : `Base estimate comes from task type: ${profile.task_type}.`,
       analysisInput.repositoryProfile
         ? "Repository context contributed stack, tooling, architecture, and overhead signals."
         : "No repository context was imported, so the estimate uses task text and clarifications only.",
       `Multipliers adjust for complexity, ambiguity, dependencies, review load, expected output size, and coordination.`,
-      `AI changes the range only through the ai_leverage factor; the final hours are deterministic.`,
-      `Confidence decreases when ambiguity, blocker probability, or dependency load are high.`
+    `AI changes the range only through the ai_leverage factor; the final hours are deterministic.`,
+    `Confidence decreases when ambiguity, blocker probability, or dependency load are high.`
     ],
     repositoryProfile: analysisInput.repositoryProfile,
-    baseEstimate
+    baseEstimate,
+    repoBaseEstimate: analysisInput.repoBaseEstimate
   };
 }

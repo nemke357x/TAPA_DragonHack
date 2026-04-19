@@ -60,6 +60,7 @@ import {
   AnalysisResult,
   ClarificationDecision,
   ClarificationQuestion,
+  RepoBaseEffortEstimate,
   RepositoryProfile
 } from "@/lib/types";
 import { cn, formatHours } from "@/lib/utils";
@@ -77,9 +78,9 @@ const productSteps: { id: PageStep; label: string; short: string }[] = [
 
 const analyzeStages = [
   "Understanding the task",
-  "Detecting complexity & dependencies",
-  "Calculating effort (without AI)",
-  "Calculating effort (with AI)",
+  "Scanning repository context",
+  "Estimating base effort from codebase",
+  "Applying clarification adjustments",
   "Building execution plan"
 ];
 
@@ -139,6 +140,23 @@ function normalizeClarificationQuestions(value: unknown): ClarificationQuestion[
       };
     })
     .filter(Boolean) as ClarificationQuestion[];
+}
+
+function mergeClarificationQuestions(
+  current: ClarificationQuestion[],
+  repoQuestions: string[]
+): ClarificationQuestion[] {
+  const existing = new Set(current.map((question) => question.question.toLowerCase()));
+  const additions = repoQuestions
+    .filter((question) => question.trim() && !existing.has(question.toLowerCase()))
+    .slice(0, Math.max(0, 5 - current.length))
+    .map((question, index) => ({
+      id: `repo-base-${index + 1}`,
+      question,
+      type: "short_text" as const
+    }));
+
+  return [...current, ...additions].slice(0, 5);
 }
 
 function averageRange(min: number, max: number) {
@@ -264,6 +282,7 @@ function EstimateApp() {
   const [githubUrl, setGithubUrl] = useState("");
   const [importNote, setImportNote] = useState("");
   const [repositoryProfile, setRepositoryProfile] = useState<RepositoryProfile | null>(null);
+  const [repoBaseEstimate, setRepoBaseEstimate] = useState<RepoBaseEffortEstimate | null>(null);
   const [error, setError] = useState("");
   const analysisKeyRef = useRef<string | null>(null);
   const clarificationKeyRef = useRef<string | null>(null);
@@ -320,6 +339,7 @@ function EstimateApp() {
     setClarificationReason("");
     setResult(record);
     setRepositoryProfile(record.repositoryProfile ?? null);
+    setRepoBaseEstimate(record.repoBaseEstimate ?? null);
     setSaved(true);
     setError("");
   }
@@ -339,6 +359,7 @@ function EstimateApp() {
     setGithubUrl("");
     setImportNote("");
     setRepositoryProfile(null);
+    setRepoBaseEstimate(null);
     setError("");
     analysisKeyRef.current = null;
     clarificationKeyRef.current = null;
@@ -367,6 +388,7 @@ function EstimateApp() {
       setGithubUrl(draft.githubUrl ?? "");
       setImportNote(draft.importNote ?? "");
       setRepositoryProfile(draft.repositoryProfile ?? draft.result?.repositoryProfile ?? null);
+      setRepoBaseEstimate(draft.repoBaseEstimate ?? draft.result?.repoBaseEstimate ?? null);
       setSaved(Boolean(draft.result));
     }
 
@@ -404,6 +426,7 @@ function EstimateApp() {
       githubUrl,
       importNote,
       repositoryProfile,
+      repoBaseEstimate,
       updated_at: new Date().toISOString()
     });
   }, [
@@ -416,6 +439,7 @@ function EstimateApp() {
     manualExtraContext,
     questions,
     repositoryProfile,
+    repoBaseEstimate,
     result,
     taskText
   ]);
@@ -467,8 +491,12 @@ function EstimateApp() {
   };
 
   function handleTaskTextChange(value: string) {
+    const changed = value !== taskText;
     setTaskText(value);
     setError("");
+    if (changed) {
+      setRepoBaseEstimate(null);
+    }
     if (result && value !== result.raw_input) {
       setResult(null);
       setActiveTaskId(null);
@@ -477,6 +505,7 @@ function EstimateApp() {
       setQuestions([]);
       setManualExtraContext("");
       setClarificationReason("");
+      setRepoBaseEstimate(null);
       setSaved(false);
       analysisKeyRef.current = null;
       clarificationKeyRef.current = null;
@@ -551,6 +580,39 @@ function EstimateApp() {
     }
   }
 
+  async function loadRepoBaseEstimate(trimmed: string) {
+    if (!repositoryProfile || repoBaseEstimate) return;
+
+    try {
+      const response = await fetch("/api/repo-base", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskText: trimmed,
+          repositoryProfile
+        })
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Could not estimate repository base effort.");
+      }
+
+      const nextBase = payload.repoBaseEstimate as RepoBaseEffortEstimate | null;
+      setRepoBaseEstimate(nextBase);
+
+      if (nextBase?.recommended_clarify_questions?.length) {
+        setQuestions((current) => mergeClarificationQuestions(current, nextBase.recommended_clarify_questions));
+      }
+    } catch (repoBaseError) {
+      setImportNote(
+        repoBaseError instanceof Error
+          ? repoBaseError.message
+          : "Repository base effort analysis failed; final analysis can still continue."
+      );
+    }
+  }
+
   function beginClarify() {
     const task = ensureTaskRecord();
     if (!task) return;
@@ -560,6 +622,7 @@ function EstimateApp() {
     analysisKeyRef.current = null;
     navigate("clarify", { taskId: task.id });
     loadClarificationQuestions(task.trimmed);
+    loadRepoBaseEstimate(task.trimmed);
   }
 
   function continueToAnalyze() {
@@ -594,14 +657,16 @@ function EstimateApp() {
       await sleep(420);
       setLoadingStage(1);
       setStageDetail(
-        `Detected ${localProfile.complexity} complexity, ${localProfile.dependencies} dependencies, and ${localProfile.ambiguity} ambiguity.`
+        repositoryProfile
+          ? `Using ${repositoryProfile.owner}/${repositoryProfile.repositoryName} repository structure, stack, and file signals.`
+          : "No repository imported; using task text for the generic base estimate."
       );
 
       const localEstimate = scoreTask(localProfile);
       await sleep(420);
       setLoadingStage(2);
       setStageDetail(
-        `Without AI range: ${formatHours(
+        `Preliminary final range before server repo analysis: ${formatHours(
           localEstimate.without_ai_min_hours,
           localEstimate.without_ai_max_hours
         )}.`
@@ -609,7 +674,7 @@ function EstimateApp() {
 
       await sleep(420);
       setLoadingStage(3);
-      setStageDetail("Applying AI leverage rules and optional model-enhanced explanation.");
+      setStageDetail("Applying clarification answers after the repository base effort is established.");
 
       const response = await fetch("/api/analyze", {
         method: "POST",
@@ -621,7 +686,8 @@ function EstimateApp() {
           manualExtraContext: manualExtraContext.trim(),
           taskId,
           createdAt: taskCreatedAt,
-          repositoryProfile: repositoryProfile ?? undefined
+          repositoryProfile: repositoryProfile ?? undefined,
+          repoBaseEstimate: repoBaseEstimate ?? undefined
         })
       });
       const payload = await response.json();
@@ -631,6 +697,7 @@ function EstimateApp() {
       }
 
       const nextResult = payload.result as AnalysisResult;
+      setRepoBaseEstimate(nextResult.repoBaseEstimate ?? null);
       await sleep(360);
       setLoadingStage(4);
       setStageDetail("Building the saved execution plan, blockers, accelerators, and optimization.");
@@ -673,6 +740,7 @@ function EstimateApp() {
       if (!response.ok) throw new Error(payload.error);
 
       setRepositoryProfile(payload.profile);
+      setRepoBaseEstimate(null);
       setImportNote(
         `Imported ${payload.profile.owner}/${payload.profile.repositoryName}: ${
           payload.profile.detectedFrameworks.slice(0, 3).join(", ") ||
@@ -1361,16 +1429,68 @@ function ResultsScreen({
           </div>
         </div>
 
+        {result.repoBaseEstimate && (
+          <div className="grid gap-3 lg:grid-cols-[1fr_1fr]">
+            <Panel title="Base effort from codebase">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Metric
+                  label="Repo base"
+                  value={formatHours(
+                    result.repoBaseEstimate.base_effort.min_hours,
+                    result.repoBaseEstimate.base_effort.max_hours
+                  )}
+                />
+                <Metric
+                  label="Repo confidence"
+                  value={`${result.repoBaseEstimate.confidence_score}%`}
+                />
+                <Metric
+                  label="Relevant files"
+                  value={`${result.repoBaseEstimate.relevant_files.length}`}
+                />
+              </div>
+              <p className="mt-4 text-sm leading-6 text-white/60">
+                {result.repoBaseEstimate.repo_summary}
+              </p>
+            </Panel>
+
+            <Panel title="Final estimate after clarification">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Metric
+                  label="Without AI"
+                  value={formatHours(
+                    result.estimation.without_ai_min_hours,
+                    result.estimation.without_ai_max_hours
+                  )}
+                />
+                <Metric
+                  label="With AI"
+                  value={formatHours(
+                    result.estimation.with_ai_min_hours,
+                    result.estimation.with_ai_max_hours
+                  )}
+                  green
+                />
+                <Metric label="Saved" value={`${result.estimation.time_saved_percent}%`} green />
+              </div>
+              <p className="mt-4 text-sm leading-6 text-white/60">
+                Clarification answers and the current deterministic scoring engine adjust the
+                codebase base effort into the final estimate.
+              </p>
+            </Panel>
+          </div>
+        )}
+
         <div className="grid gap-3 md:grid-cols-4">
           <Metric
-            label="Without AI"
+            label={result.repoBaseEstimate ? "Final without AI" : "Without AI"}
             value={formatHours(
               result.estimation.without_ai_min_hours,
               result.estimation.without_ai_max_hours
             )}
           />
           <Metric
-            label="With AI"
+            label={result.repoBaseEstimate ? "Final with AI" : "With AI"}
             value={formatHours(
               result.estimation.with_ai_min_hours,
               result.estimation.with_ai_max_hours
@@ -1379,6 +1499,29 @@ function ResultsScreen({
           <Metric label="Time saved" value={`${result.estimation.time_saved_percent}%`} green />
           <Metric label="Confidence" value={`${result.estimation.confidence_score}%`} />
         </div>
+
+        {result.repoBaseEstimate && (
+          <div className="grid gap-4 lg:grid-cols-3">
+            <ListPanel
+              title="Likely impacted areas"
+              items={result.repoBaseEstimate.likely_impacted_areas.map(
+                (area) => `${area.area}: ${area.estimated_share_percent}% - ${area.reason}`
+              )}
+              icon={Workflow}
+            />
+            <ListPanel
+              title="Reuse opportunities"
+              items={result.repoBaseEstimate.existing_reuse_opportunities}
+              icon={CheckCircle2}
+            />
+            <ListPanel
+              title="Repository risks"
+              items={result.repoBaseEstimate.repo_risks}
+              icon={ShieldAlert}
+              danger
+            />
+          </div>
+        )}
 
         <div className="grid gap-4 lg:grid-cols-2">
           <ListPanel title="Why this estimate" items={result.explanation} icon={FileText} />
@@ -1686,6 +1829,11 @@ function HistoryScreen({
                       <div>
                         <p className="line-clamp-2 text-sm font-black text-white/85">{record.title}</p>
                         <p className="mt-1 text-xs text-white/40">{shortDate(record.created_at)}</p>
+                        {record.repositoryProfile && (
+                          <p className="mt-1 text-xs font-black text-emerald-200/75">
+                            {record.repositoryProfile.owner}/{record.repositoryProfile.repositoryName}
+                          </p>
+                        )}
                       </div>
                       <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-white/35" />
                     </div>

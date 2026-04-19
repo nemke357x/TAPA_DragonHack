@@ -33,6 +33,7 @@ export function extractRepositoryProfile(input: {
   languages: Record<string, number>;
   topLevelStructure: string[];
   files: FileSignal[];
+  fileTree?: string[];
 }): RepositoryProfile {
   const fileText = input.files
     .map((file) => `${file.path}\n${file.content ?? ""}`)
@@ -103,6 +104,12 @@ export function extractRepositoryProfile(input: {
     architectureNotes,
     topLevelStructure: input.topLevelStructure,
     importantFiles,
+    fileTree: input.fileTree,
+    sampledFiles: input.files.map((file) => ({
+      path: file.path,
+      content: file.content?.slice(0, 5000),
+      summary: summarizeFile(file.path, file.content)
+    })),
     complexitySignals,
     implementationOverheadHints,
     repoSummary: summarizeRepo({
@@ -116,6 +123,17 @@ export function extractRepositoryProfile(input: {
     importedAt: new Date().toISOString(),
     sourceUrl: input.sourceUrl
   };
+}
+
+function summarizeFile(path: string, content = "") {
+  const firstLines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 6)
+    .join(" ");
+
+  return `${path}${firstLines ? `: ${firstLines.slice(0, 220)}` : ""}`;
 }
 
 function detectPackageManager(files: string[]) {

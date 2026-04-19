@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
-import { deriveBaseEstimateFromAI } from "@/lib/analysis-input";
+import { repoBaseToSuggestedEstimate } from "@/lib/final-estimator";
 import { describeOpenAIError, getOpenAIClient, getOpenAIModel } from "@/lib/openai-server";
+import { estimateRepoBaseEffort } from "@/lib/repo-base-estimator";
 import { buildAnalysis } from "@/lib/scoring";
-import { AnalysisInput, ClarificationQuestion, RepositoryProfile } from "@/lib/types";
+import {
+  AnalysisInput,
+  ClarificationQuestion,
+  RepoBaseEffortEstimate,
+  RepositoryProfile
+} from "@/lib/types";
 
 export async function POST(request: Request) {
   const body = (await request.json()) as {
@@ -14,6 +20,7 @@ export async function POST(request: Request) {
     taskId?: string;
     createdAt?: string;
     repositoryProfile?: RepositoryProfile;
+    repoBaseEstimate?: RepoBaseEffortEstimate;
   };
 
   const ticket = (body.taskText ?? body.ticket)?.trim();
@@ -41,13 +48,21 @@ export async function POST(request: Request) {
   };
 
   const { client, status } = getOpenAIClient();
+  const repoBaseEstimate =
+    body.repoBaseEstimate ??
+    (await estimateRepoBaseEffort({
+      taskText: ticket,
+      repositoryProfile: body.repositoryProfile
+    }));
+  const suggestedBaseEstimate = repoBaseToSuggestedEstimate(repoBaseEstimate);
   const analysisInput: AnalysisInput = {
     taskText: ticket,
     clarificationAnswers: answers,
     repositoryProfile: body.repositoryProfile,
-    estimateSource: "deterministic-default"
+    repoBaseEstimate: repoBaseEstimate ?? undefined,
+    suggestedBaseEstimate: suggestedBaseEstimate ?? undefined,
+    estimateSource: suggestedBaseEstimate?.baseEstimateSource ?? "deterministic-default"
   };
-  const suggestedBaseEstimate = await deriveBaseEstimateFromAI(analysisInput);
   const fallback = buildAnalysis(
     {
       ...analysisInput,
@@ -86,7 +101,7 @@ export async function POST(request: Request) {
         {
           role: "system",
           content:
-            "You help software teams plan work. Return compact JSON only. Do not estimate hours yet; the app currently uses deterministic scoring. Improve summaries, blockers, accelerators, workflow, and subtask guidance based on the deterministic profile and repository profile. A future base-estimate provider may suggest base hours before deterministic multipliers are applied."
+            "You help software teams plan work. Return compact JSON only. Do not replace or recalculate hour estimates; the app uses deterministic final scoring with a separate repository base effort when available. Improve summaries, blockers, accelerators, workflow, and subtask guidance based on the deterministic profile, repository base estimate, repository profile, and clarification answers."
         },
         {
           role: "user",

@@ -132,7 +132,8 @@ export async function POST(request: Request) {
     sourceUrl: repo.html_url,
     languages: languages ?? {},
     topLevelStructure: (rootContents ?? []).map((item) => `${item.type}:${item.name}`),
-    files
+    files,
+    fileTree: treePaths.slice(0, 3000)
   });
 
   return NextResponse.json({ profile });
